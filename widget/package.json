@@ -1,0 +1,16 @@
+{
+  "name": "@launch-log/widget",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "esbuild src/index.js --bundle --sourcemap --outfile=dist/widget.js --watch",
+    "build": "esbuild src/index.js --bundle --minify --outfile=dist/widget.js",
+    "test": "jest"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.0.0",
+    "esbuild": "^0.20.0",
+    "jest": "^29.0.0",
+    "jest-environment-jsdom": "^29.0.0"
+  }
+}

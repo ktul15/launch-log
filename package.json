@@ -1,0 +1,19 @@
+{
+  "name": "launch-log",
+  "private": true,
+  "workspaces": [
+    "backend",
+    "web",
+    "widget"
+  ],
+  "scripts": {
+    "dev:backend": "npm run dev --workspace=backend",
+    "dev:web": "npm run dev --workspace=web",
+    "dev:widget": "npm run dev --workspace=widget",
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
