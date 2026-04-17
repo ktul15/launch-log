@@ -1,16 +1,16 @@
 # LaunchLog — Market Viability Document
 
 **Prepared**: April 2026
-**Product**: LaunchLog — Public Changelog, Roadmap & Feature Voting for Startups
+**Product**: LaunchLog — Public Changelog, Roadmap, Feature Voting, Help Center, Surveys & Live Chat for Startups
 **Classification**: Internal strategic document — go/no-go decision
 
 ---
 
 ## 1. Executive Summary
 
-**Verdict: CONDITIONAL GO — proceed with modified pricing and aggressive timeline.**
+**Verdict: CONDITIONAL GO — proceed with free tier parity, aggressive timeline, and differentiation through extras.**
 
-The changelog/roadmap/feature-voting space is real, growing, and poorly served at the low end. Canny's strategic retreat upmarket and Productboard's enterprise bloat have left a genuine vacuum for startups needing a simple, affordable, all-in-one tool. However, Featurebase already occupies much of the territory LaunchLog intends to claim, with a generous free tier and significant traction among Canny refugees. LaunchLog can succeed if it executes on three conditions: (1) ships an MVP within 8 weeks to avoid further Featurebase entrenchment, (2) recalibrates pricing to compete with Featurebase's free tier rather than ignoring it, and (3) leverages its "Powered by" widget distribution as a genuine growth engine rather than treating it as a side benefit.
+The changelog/roadmap/feature-voting space is real, growing, and poorly served at the low end. Canny's strategic retreat upmarket and Productboard's enterprise bloat have left a genuine vacuum for startups needing a simple, affordable, all-in-one tool. Featurebase occupies much of this territory with a generous free tier and significant traction among Canny refugees. **LaunchLog's revised strategy: match Featurebase's entire free tier feature set (changelog, roadmap, feedback, help center, surveys, live chat, unified inbox) and then surpass it with additional free features (basic analytics, RSS feed, changelog categories, feature request comments, CSV export, custom public page theming).** This eliminates the single biggest competitive disadvantage — Featurebase's superior free offering — and turns LaunchLog's free tier into a genuine acquisition weapon. LaunchLog can succeed if it executes on three conditions: (1) ships an MVP within 10 weeks incorporating core features + help center + quick wins, with live chat and surveys following in Phase 1.5 (weeks 11–14), (2) leverages its "Powered by" widget distribution as a genuine growth engine, and (3) differentiates on design quality and simplicity against Featurebase's increasingly complex dual support+product positioning.
 
 ---
 
@@ -51,7 +51,7 @@ LaunchLog targets early-stage startups and small SaaS teams (1–20 employees) w
 
 | Tool | Free Tier | Paid Starting At | All 3 Features | Widget |
 |---|---|---|---|---|
-| **LaunchLog** | 3 projects, 10 posts | $9/mo | ✓ | ✓ Floating + inline |
+| **LaunchLog** | 1 project, unlimited posts, help center (50 articles), surveys, live chat, basic analytics | $9/mo | ✓ + Help Center, Surveys, Chat | ✓ Floating + inline |
 | **Featurebase** | Unlimited users, feedback, roadmap, changelog | $29/seat/mo | ✓ | ✓ |
 | **Canny** | Removed Dec 2025 | $19/mo (100 tracked users) | ✓ | ✓ Changelog only |
 | **Beamer** | Very limited | $59/mo ($49 annual) | ✗ (+$99/mo add-on) | ✓ |
@@ -107,12 +107,13 @@ LaunchLog targets early-stage startups and small SaaS teams (1–20 employees) w
 - **LaunchLog opportunity**: Price-conscious buyers who bounced from the trial without converting
 
 ### Featurebase — the real competitor (honest assessment)
-- Free tier is **more generous** than LaunchLog's on every dimension
-- Actively winning Canny refugees — the exact same audience LaunchLog targets
-- Has AI features LaunchLog does not
-- Dual positioning (support + product suite) creates messaging complexity — a potential simplicity advantage for LaunchLog
+- LaunchLog now **matches Featurebase's free tier** on core features: changelog, roadmap, feedback, help center, surveys, live chat, unified inbox
+- LaunchLog **surpasses Featurebase's free tier** with extras: basic analytics, RSS feed, changelog categories, feature request comments, CSV export, custom public page theming
+- Featurebase actively winning Canny refugees — the exact same audience LaunchLog targets
+- Has AI features (Fibi Agent, Copilot) LaunchLog does not — but these are gated behind $29/seat Growth tier, not free
+- Dual positioning (support + product suite) creates messaging complexity — a clear simplicity advantage for LaunchLog
 - $29/seat Growth tier gets expensive for 3-person teams ($87/mo vs. LaunchLog's $9/mo)
-- **LaunchLog's window**: Simplicity positioning, better design, superior widget distribution execution, faster iteration
+- **LaunchLog's window**: Feature parity on free tier eliminates the biggest adoption barrier. Simplicity positioning, better design, superior widget distribution, and free-tier extras create genuine reasons to choose LaunchLog over Featurebase
 
 ---
 
@@ -149,12 +150,13 @@ All three features (changelog + roadmap + voting) at $9/mo vs. Beamer's $158+/mo
 ### vs. Productboard: Simplicity
 Setup in minutes vs. 2–6 weeks onboarding. For startups that want to ship a changelog today — not build a product management workflow — this is decisive.
 
-### vs. Featurebase: This is genuinely difficult
-LaunchLog's free tier is less generous. The paid tier is cheaper ($9 vs. $29/seat) but has a narrower feature set. Differentiation must come from execution:
-- Simpler UX — Featurebase's dual support+product positioning creates messaging confusion
-- Better design — make public pages beautiful enough that customers are proud to share them
-- Superior widget distribution execution
-- Faster post-launch iteration speed
+### vs. Featurebase: Free tier parity + extras strategy
+LaunchLog now matches Featurebase's free tier feature-for-feature and adds extras they don't offer for free. The paid tier is dramatically cheaper ($9 vs. $29/seat). Differentiation comes from three angles:
+1. **Free tier advantage** — basic analytics, RSS feed, changelog categories, comments, CSV export, and custom theming are all free on LaunchLog but gated or absent on Featurebase
+2. **Simplicity** — LaunchLog is a focused changelog/roadmap/feedback tool. Featurebase's expansion into support ticketing (Zendesk competitor) creates complexity and messaging confusion that LaunchLog avoids entirely
+3. **Design excellence** — make public pages beautiful enough that customers are proud to share them. This is a tangible differentiator visitors can see immediately
+4. **Widget distribution** — superior "Powered by" execution creates a compounding acquisition engine
+5. **Price** — $9/mo Starter vs. $29/seat Growth. For a 3-person team: $9/mo vs. $87/mo
 
 ### The real differentiator: The distribution flywheel
 "Powered by LaunchLog" widget is the most strategically important feature in the entire product. This is how Intercom, Crisp, and Hotjar grew. Every free-tier customer becomes a passive distribution channel. 1,000 widgets × 100 monthly impressions = **100,000 brand impressions per month at zero marginal cost**. This is the moat to build — not feature parity.
@@ -180,18 +182,20 @@ LaunchLog's free tier is less generous. The paid tier is cheaper ($9 vs. $29/sea
 
 **Arguments for**: Below the "just expense it" threshold, maximizes adoption velocity, 12× price advantage over Canny's entry tier, annual prepay at $90 feels effortless.
 
-**Arguments against**: Featurebase's free tier makes $9/mo feel expensive for comparable features, LTV of $180–300 is thin, virtually impossible to run paid acquisition profitably, 111 paid customers needed to reach $1K MRR.
+**Arguments against**: With free tier now matching Featurebase, the $9/mo upgrade hook depends on multi-project needs and white-labeling — not core features. LTV of $180–300 is thin, virtually impossible to run paid acquisition profitably, 111 paid customers needed to reach $1K MRR.
 
 ### Recommended pricing architecture (revision to original PLAN.md)
 
 | Tier | Price | Primary purpose |
 |---|---|---|
-| Free | $0 | Widget distribution + acquisition engine |
-| Starter | $9/mo | Convert free users; basic single-user needs |
-| **Pro** | **$19/mo** | **Primary revenue driver — teams, integrations, analytics** |
+| Free | $0 | Full feature parity with Featurebase free + extras. Widget distribution + acquisition engine |
+| Starter | $9/mo | Convert free users; multiple projects, white-label widget, more articles/surveys |
+| **Pro** | **$19/mo** | **Primary revenue driver — teams, advanced integrations, advanced analytics, API** |
 | Business | $49/mo | Future: custom domains, SSO, priority support |
 
-**The $19/mo Pro tier must launch by Month 4–6, not as a "Phase 3" item.** With 300 paid customers at ~$14 blended ARPU: $50K ARR — a viable indie business.
+**Free tier strategy**: Match every Featurebase free feature (changelog, roadmap, feedback, help center, surveys, live chat, inbox) and add extras they don't offer for free (basic analytics, RSS, categories, comments, CSV export, theming). This eliminates the #1 reason a prospect would choose Featurebase over LaunchLog at the $0 tier. Upgrade hooks remain strong: multiple projects, widget branding removal, team seats, advanced analytics, integrations, and API access.
+
+**The $19/mo Pro tier must launch by Month 5–7 (Phase 1.6), not as a "Phase 3" item.** With 300 paid customers at ~$14 blended ARPU: $50K ARR — a viable indie business.
 
 ---
 
@@ -218,10 +222,10 @@ LaunchLog's free tier is less generous. The paid tier is cheaper ($9 vs. $29/sea
 
 ## 9. Key Risks & Honest Threats
 
-### RISK 1: Featurebase (CRITICAL)
-Most generous free tier in the market. Actively winning Canny refugees. Has AI features, 1–2 year head start in product development, and growing brand recognition among the exact target audience.
+### RISK 1: Featurebase (HIGH — downgraded from CRITICAL)
+LaunchLog now matches Featurebase's free tier and surpasses it with extras. However, Featurebase has a 1–2 year head start, AI features (Fibi Agent, Copilot), and growing brand recognition. The risk is no longer about free tier inferiority — it's about execution speed and brand awareness.
 
-**Mitigation**: Cannot out-feature; must out-position and out-distribute. Simplicity-first narrative. Better public page design. Widget distribution executed more aggressively. Faster iteration cadence.
+**Mitigation**: Free tier parity eliminates the #1 adoption barrier. Differentiate on design quality, simplicity, and free-tier extras (analytics, RSS, comments, export). Widget distribution executed aggressively. Faster iteration cadence. The AI gap is real but AI features are gated behind Featurebase's $29/seat Growth tier — not a free tier concern.
 
 **If Featurebase raises a significant funding round and goes aggressive on performance marketing, LaunchLog's acquisition window narrows substantially and rapidly.**
 
@@ -272,12 +276,14 @@ Based on this analysis, the following changes to the original plan are recommend
 
 | Original Plan Decision | Recommended Change | Reason |
 |---|---|---|
-| Two tiers only (Free + $9 Starter) | Add $19/mo Pro by Month 4–6 | $9/mo alone is insufficient for a viable business |
+| Two tiers only (Free + $9 Starter) | Add $19/mo Pro by Month 5–7 | $9/mo alone is insufficient for a viable business |
 | Flutter web for admin dashboard | Consider Next.js for MVP admin | Saves 3–4 weeks to launch; Flutter optional post-revenue |
 | Custom domains in Phase 2 | Move to Pro tier ($19/mo) gating | Strong upgrade hook; currently gated too late in roadmap |
 | Team members (3) in Phase 2 | Move to Pro tier MVP | Key differentiator from free; primary upgrade driver |
-| 10 free posts per project | Reconsider: unlimited posts, gate on projects/seats | Current limit is weaker than Featurebase's free tier |
-| 12-week MVP timeline | Target 8 weeks | Canny migration wave is time-limited; Featurebase is moving fast |
+| Limited free tier (1 project only) | Match Featurebase free tier + add extras | Eliminates #1 adoption barrier; free tier becomes acquisition weapon |
+| No help center, surveys, live chat | Add all three to free tier (help center in Phase 1, live chat + surveys in Phase 1.5) | Required for Featurebase parity; broadens product surface area |
+| No free analytics, RSS, comments, export | Add basic analytics, RSS, categories, comments, CSV export, theming to free tier | Surpasses Featurebase free tier; creates genuine competitive advantage |
+| 8-week MVP timeline | Target 10 weeks for Phase 1 core; Phase 1.5 (weeks 11–14) for live chat, inbox, surveys | Added scope requires phased delivery; core out fast, parity features follow |
 
 ---
 
@@ -297,7 +303,7 @@ Based on this analysis, the following changes to the original plan are recommend
 
 ### Why conditional
 
-- Featurebase is a genuinely formidable competitor that must be out-executed on design and distribution, not features or price
+- Featurebase is a genuinely formidable competitor. Free tier parity eliminates the biggest adoption barrier, but Featurebase has brand momentum, AI features, and a head start — LaunchLog must out-execute on design, simplicity, and distribution
 - $9/mo alone does not build a sustainable business — the $19/mo Pro tier must ship by Month 4–6, not as a long-term roadmap item
 - The tech stack should be rationalized (drop Flutter for MVP) to cut 3–4 weeks from time-to-market
 - The window is 18–24 months before category consolidation accelerates and the opportunity either closes or becomes much harder to enter
