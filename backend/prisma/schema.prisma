@@ -1,0 +1,396 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum Plan {
+  free
+  starter
+  pro
+}
+
+enum UserRole {
+  owner
+  editor
+}
+
+enum ChangelogStatus {
+  draft
+  published
+  archived
+}
+
+enum RoadmapStatus {
+  planned
+  in_progress
+  shipped
+}
+
+enum FeatureStatus {
+  open
+  planned
+  in_progress
+  shipped
+  closed
+}
+
+enum NotificationType {
+  changelog_published
+  feature_shipped
+  status_changed
+  vote_verification
+  subscribe_verification
+}
+
+enum SurveyStatus {
+  draft
+  active
+  closed
+}
+
+enum ConversationStatus {
+  open
+  resolved
+  closed
+}
+
+enum Channel {
+  live_chat
+  email
+}
+
+enum SenderType {
+  visitor
+  admin
+}
+
+// ─── Models ───────────────────────────────────────────────────────────────────
+
+model Organization {
+  id                     String    @id @default(uuid())
+  name                   String
+  // VarChar(100): slugs appear in public URLs — enforce length at DB level
+  slug                   String    @unique @db.VarChar(100)
+  logoUrl                String?
+  plan                   Plan      @default(free)
+  stripeCustomerId       String?
+  stripeSubscriptionId   String?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  users       User[]
+  projects    Project[]
+  invitations Invitation[]
+
+  @@map("organizations")
+}
+
+model User {
+  id           String    @id @default(uuid())
+  orgId        String
+  email        String
+  passwordHash String?
+  googleId     String?
+  name         String
+  avatarUrl    String?
+  role         UserRole  @default(editor)
+  createdAt    DateTime  @default(now())
+
+  org              Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  changelogEntries ChangelogEntry[]
+  helpArticles     HelpArticle[]
+  surveys          Survey[]
+  roadmapItems     RoadmapItem[]
+
+  // Unique per org, not globally — same person can belong to multiple orgs
+  @@unique([orgId, email])
+  @@map("users")
+}
+
+model Project {
+  id             String   @id @default(uuid())
+  orgId          String
+  name           String
+  // VarChar(100): slugs appear in public URLs — enforce length at DB level
+  slug           String   @db.VarChar(100)
+  description    String?
+  widgetKey      String   @unique @default(uuid())
+  widgetSettings Json     @default("{}")
+  themeSettings  Json     @default("{}")
+  customDomain   String?
+  domainVerified Boolean  @default(false)
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  org                Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  changelogEntries    ChangelogEntry[]
+  changelogCategories ChangelogCategory[]
+  roadmapItems        RoadmapItem[]
+  featureRequests     FeatureRequest[]
+  subscribers         Subscriber[]
+  helpArticles        HelpArticle[]
+  surveys             Survey[]
+  conversations       Conversation[]
+  analyticsEvents     AnalyticsEvent[]
+
+  @@unique([orgId, slug])
+  @@index([widgetKey])
+  @@map("projects")
+}
+
+model ChangelogCategory {
+  id           String   @id @default(uuid())
+  projectId    String
+  name         String
+  slug         String   @db.VarChar(100)
+  color        String
+  displayOrder Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  project          Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  changelogEntries ChangelogEntry[]
+
+  @@unique([projectId, slug])
+  @@map("changelog_categories")
+}
+
+model ChangelogEntry {
+  id          String          @id @default(uuid())
+  projectId   String
+  title       String
+  content     Json
+  version     String?
+  categoryId  String?
+  status      ChangelogStatus @default(draft)
+  publishedAt DateTime?
+  // Nullable: preserves entries if the author is removed from the org
+  authorId    String?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  project           Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  category          ChangelogCategory?  @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  author            User?               @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  notificationLogs  NotificationLog[]
+
+  @@index([projectId, status])
+  @@map("changelog_entries")
+}
+
+model RoadmapItem {
+  id           String        @id @default(uuid())
+  projectId    String
+  title        String
+  description  String?
+  status       RoadmapStatus @default(planned)
+  displayOrder Int           @default(0)
+  createdBy    String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  creator User?   @relation(fields: [createdBy], references: [id], onDelete: SetNull)
+
+  @@index([projectId, status])
+  @@map("roadmap_items")
+}
+
+model FeatureRequest {
+  id             String        @id @default(uuid())
+  projectId      String
+  title          String
+  description    String?
+  status         FeatureStatus @default(open)
+  // Always update via atomic increment: prisma.featureRequest.update({ data: { voteCount: { increment: 1 } } })
+  voteCount      Int           @default(0)
+  submitterEmail String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  project  Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  comments Comment[]
+  votes    Vote[]
+
+  @@index([projectId, status])
+  @@map("feature_requests")
+}
+
+model Comment {
+  id               String   @id @default(uuid())
+  featureRequestId String
+  authorEmail      String
+  authorName       String?
+  content          String   @db.Text
+  isAdmin          Boolean  @default(false)
+  createdAt        DateTime @default(now())
+
+  featureRequest FeatureRequest @relation(fields: [featureRequestId], references: [id], onDelete: Cascade)
+
+  @@map("comments")
+}
+
+model Vote {
+  id                String   @id @default(uuid())
+  featureRequestId  String
+  voterEmail        String
+  verified          Boolean  @default(false)
+  verificationToken String   @unique
+  ipHash            String?
+  createdAt         DateTime @default(now())
+
+  featureRequest FeatureRequest @relation(fields: [featureRequestId], references: [id], onDelete: Cascade)
+
+  @@unique([featureRequestId, voterEmail])
+  @@index([verificationToken])
+  @@map("votes")
+}
+
+model Subscriber {
+  id                String   @id @default(uuid())
+  projectId         String
+  email             String
+  verified          Boolean  @default(false)
+  verificationToken String   @unique
+  createdAt         DateTime @default(now())
+
+  project          Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  notificationLogs NotificationLog[]
+
+  @@unique([projectId, email])
+  @@index([verificationToken])
+  @@map("subscribers")
+}
+
+model NotificationLog {
+  id               String           @id @default(uuid())
+  subscriberId     String?
+  changelogEntryId String?
+  type             NotificationType
+  referenceId      String?
+  sentAt           DateTime         @default(now())
+
+  subscriber     Subscriber?     @relation(fields: [subscriberId], references: [id], onDelete: SetNull)
+  changelogEntry ChangelogEntry? @relation(fields: [changelogEntryId], references: [id], onDelete: SetNull)
+
+  @@index([subscriberId])
+  @@index([changelogEntryId])
+  @@map("notification_logs")
+}
+
+model Invitation {
+  id         String    @id @default(uuid())
+  orgId      String
+  email      String
+  role       UserRole
+  token      String    @unique
+  // Invitations expire — tokens are bearer credentials and must not be permanent
+  expiresAt  DateTime
+  acceptedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@map("invitations")
+}
+
+model HelpArticle {
+  id           String   @id @default(uuid())
+  projectId    String
+  title        String
+  slug         String   @db.VarChar(100)
+  content      Json
+  category     String?
+  displayOrder Int      @default(0)
+  published    Boolean  @default(false)
+  // Nullable: preserves articles if the author is removed from the org
+  authorId     String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  author  User?   @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
+  @@unique([projectId, slug])
+  @@map("help_articles")
+}
+
+model Survey {
+  id          String       @id @default(uuid())
+  projectId   String
+  title       String
+  description String?
+  questions   Json         @default("[]")
+  status      SurveyStatus @default(draft)
+  // Nullable: preserves surveys if the creator is removed from the org
+  createdBy   String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  project   Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  creator   User?            @relation(fields: [createdBy], references: [id], onDelete: SetNull)
+  responses SurveyResponse[]
+
+  @@map("surveys")
+}
+
+model SurveyResponse {
+  id               String   @id @default(uuid())
+  surveyId         String
+  answers          Json
+  respondentEmail  String?
+  createdAt        DateTime @default(now())
+
+  survey Survey @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+
+  @@map("survey_responses")
+}
+
+model Conversation {
+  id           String             @id @default(uuid())
+  projectId    String
+  visitorEmail String
+  visitorName  String?
+  status       ConversationStatus @default(open)
+  channel      Channel            @default(live_chat)
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  project  Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  messages Message[]
+
+  @@map("conversations")
+}
+
+model Message {
+  id             String     @id @default(uuid())
+  conversationId String
+  senderType     SenderType
+  senderId       String?
+  content        String     @db.Text
+  createdAt      DateTime   @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@map("messages")
+}
+
+model AnalyticsEvent {
+  id        String   @id @default(uuid())
+  projectId String
+  type      String   @db.VarChar(100)
+  metadata  Json     @default("{}")
+  ipHash    String?
+  createdAt DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt])
+  @@map("analytics_events")
+}
