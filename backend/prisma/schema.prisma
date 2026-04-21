@@ -108,8 +108,10 @@ model User {
   surveys          Survey[]
   roadmapItems     RoadmapItem[]
 
-  // Unique per org, not globally — same person can belong to multiple orgs
+  // Unique per org, not globally — same person can belong to multiple orgs via invitation
   @@unique([orgId, email])
+  // googleId is a global identifier — one Google account maps to at most one User record
+  @@unique([googleId])
   @@map("users")
 }
 

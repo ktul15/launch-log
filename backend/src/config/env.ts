@@ -1,7 +1,18 @@
 import { z } from 'zod'
 
-// Matches jsonwebtoken expiresIn format: "15m", "1h", "7d", "3600" (seconds as number string)
-const jwtExpiry = z.string().regex(/^\d+[smhd]$|^\d+$/, 'Must be a number followed by s, m, h, or d (e.g. 15m, 1h, 7d)')
+// Matches jsonwebtoken expiresIn format: "15m", "1h", "7d", "3600" (seconds as number string).
+// Also rejects zero values (e.g. "0m") which pass the regex but would crash at startup when
+// expiryToSeconds throws — better to fail here with a clear message.
+const jwtExpiry = z
+  .string()
+  .regex(/^\d+[smhd]$|^\d+$/, 'Must be a number followed by s, m, h, or d (e.g. 15m, 1h, 7d)')
+  .refine(
+    (v) => {
+      const n = Number(v.replace(/[smhd]$/, ''))
+      return n > 0
+    },
+    { message: 'JWT expiry value must be greater than zero' },
+  )
 
 const baseSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -13,8 +24,32 @@ const baseSchema = z.object({
   JWT_REFRESH_SECRET: z.string().min(32, 'JWT_REFRESH_SECRET must be at least 32 characters'),
   JWT_ACCESS_EXPIRES_IN: jwtExpiry.default('15m'),
   JWT_REFRESH_EXPIRES_IN: jwtExpiry.default('7d'),
-  // Validated as URL(s) to catch typos; comma-separated in production
-  CORS_ORIGIN: z.string().min(1).default('http://localhost:3000'),
+  // Comma-separated list of allowed origins. Each entry is validated as a URL to catch typos
+  // early — a bad value would otherwise produce a silent open-redirect in the OAuth callback.
+  CORS_ORIGIN: z
+    .string()
+    .min(1)
+    .default('http://localhost:3000')
+    .refine(
+      (v) =>
+        v
+          .split(',')
+          .map((s) => s.trim())
+          .every((origin) => {
+            try {
+              const parsed = new URL(origin)
+              // Origins must be scheme://host[:port] only — browsers never send a path in the
+              // Origin header, so a path in CORS_ORIGIN would cause all preflight checks to fail.
+              return (parsed.pathname === '/' || parsed.pathname === '') && !parsed.search && !parsed.hash
+            } catch {
+              return false
+            }
+          }),
+      { message: 'CORS_ORIGIN must be a comma-separated list of origins (scheme://host[:port] only, no path)' },
+    ),
+  // Public URL of this backend — used to build the Google OAuth callback URL.
+  // Must be registered in Google Cloud Console as an authorised redirect URI.
+  APP_URL: z.string().url().default('http://localhost:3001'),
 
   // External services — optional at startup; validated when each service is first used
   RESEND_API_KEY: z.string().optional(),
@@ -24,8 +59,16 @@ const baseSchema = z.object({
   R2_SECRET_ACCESS_KEY: z.string().optional(),
   R2_BUCKET: z.string().optional(),
   R2_ENDPOINT: z.string().url().optional(),
-  GOOGLE_CLIENT_ID: z.string().optional(),
-  GOOGLE_CLIENT_SECRET: z.string().optional(),
+  GOOGLE_CLIENT_ID: z
+    .string()
+    .refine((v) => v.endsWith('.apps.googleusercontent.com'), {
+      message: 'GOOGLE_CLIENT_ID must end with .apps.googleusercontent.com',
+    })
+    .optional(),
+  GOOGLE_CLIENT_SECRET: z
+    .string()
+    .min(10, 'GOOGLE_CLIENT_SECRET appears too short')
+    .optional(),
 })
 
 export type Env = z.infer<typeof baseSchema>

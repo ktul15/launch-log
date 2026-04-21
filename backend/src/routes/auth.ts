@@ -5,6 +5,8 @@ import crypto from 'crypto'
 import { Organization, User } from '@prisma/client'
 import { PrismaClientKnownRequestError } from '@prisma/client/runtime/library'
 import { env } from '../config/env'
+import { googleOAuth } from '../plugins/passport'
+import { toSlug } from '../utils/slug'
 import '@fastify/cookie'
 
 const BCRYPT_ROUNDS = 10
@@ -31,15 +33,6 @@ const loginSchema = z.object({
   password: z.string().min(1, 'Password is required').max(1024),
 })
 
-function toSlug(name: string): string {
-  const slug = name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-  // Non-ASCII org names (Cyrillic, CJK, etc.) produce an empty slug — use a random hex ID instead
-  return slug.length >= 2 ? slug : crypto.randomBytes(4).toString('hex')
-}
-
 // Parses JWT expiry strings like "15m", "7d", "1h" to seconds for cookie maxAge and Redis TTL.
 // Throws on unrecognised formats or non-positive values so misconfigured env vars surface at
 // startup rather than silently producing NaN/zero, which would corrupt expiry values.
@@ -59,12 +52,19 @@ function expiryToSeconds(exp: string): number {
 const ACCESS_MAX_AGE = expiryToSeconds(env.JWT_ACCESS_EXPIRES_IN)
 const REFRESH_MAX_AGE = expiryToSeconds(env.JWT_REFRESH_EXPIRES_IN)
 
+// lax permits cookies on top-level navigations (required for OAuth callbacks). strict would
+// offer no additional CSRF protection here because our API endpoints require a JSON body and
+// the httpOnly flag already prevents JS from reading the token.
 const COOKIE_BASE = {
   httpOnly: true,
   secure: env.NODE_ENV === 'production',
-  sameSite: 'strict' as const,
+  sameSite: 'lax' as const,
   path: '/',
 }
+
+// CORS_ORIGIN may be comma-separated in production (e.g. "https://a.com,https://b.com").
+// Use only the first origin for redirects to keep the Location header a valid URL.
+const FRONTEND_ORIGIN = env.CORS_ORIGIN.split(',')[0].trim().replace(/\/$/, '')
 
 // Attempts to create org + user atomically, retrying up to MAX_SLUG_ATTEMPTS times on slug
 // collision. Uses 4-byte (8 hex-char) suffix giving ~4 billion values per base slug.
@@ -76,7 +76,7 @@ async function createOrgAndUser(
   passwordHash: string,
 ): Promise<{ org: Organization; user: User }> {
   const MAX_SLUG_ATTEMPTS = 5
-  const baseSlug = toSlug(orgName)
+  const baseSlug = toSlug(orgName, fastify.log)
 
   for (let attempt = 0; attempt <= MAX_SLUG_ATTEMPTS; attempt++) {
     const slug =
@@ -208,6 +208,57 @@ export default async function authRoutes(fastify: FastifyInstance) {
     },
   )
 
+  // ─── Google OAuth ──────────────────────────────────────────────────────────
+
+  const GOOGLE_RATE_LIMIT = env.NODE_ENV === 'test' ? 100_000 : 20
+
+  // Step 1: redirect browser to Google's consent screen
+  fastify.get(
+    '/google',
+    { config: { rateLimit: { max: GOOGLE_RATE_LIMIT, timeWindow: 60_000 } } },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      if (!googleOAuth.authenticate) {
+        return reply.status(503).send({ message: 'Google OAuth is not configured' })
+      }
+      const result = await googleOAuth.authenticate(req, reply)
+      if (result.type === 'redirect') return reply.redirect(result.url)
+    },
+  )
+
+  // Step 2: Google redirects back here; Passport exchanges the code for a profile
+  fastify.get(
+    '/google/callback',
+    { config: { rateLimit: { max: GOOGLE_RATE_LIMIT, timeWindow: 60_000 } } },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      if (!googleOAuth.authenticate) {
+        return reply.redirect(`${FRONTEND_ORIGIN}/login?error=oauth`)
+      }
+
+      let result
+      try {
+        result = await googleOAuth.authenticate(req, reply)
+      } catch {
+        return reply.redirect(`${FRONTEND_ORIGIN}/login?error=oauth`)
+      }
+
+      if (result.type !== 'success') {
+        return reply.redirect(`${FRONTEND_ORIGIN}/login?error=oauth`)
+      }
+
+      const { user } = result
+      const payload = { sub: user.id, orgId: user.orgId, role: user.role }
+      const accessToken = fastify.access.sign(payload)
+      const refreshToken = fastify.refresh.sign(payload)
+
+      await fastify.redis.set(`refresh:${user.id}`, refreshToken, 'EX', REFRESH_MAX_AGE)
+
+      reply.setCookie('access_token', accessToken, { ...COOKIE_BASE, maxAge: ACCESS_MAX_AGE })
+      reply.setCookie('refresh_token', refreshToken, { ...COOKIE_BASE, maxAge: REFRESH_MAX_AGE })
+
+      return reply.redirect(FRONTEND_ORIGIN)
+    },
+  )
+
   fastify.post(
     '/logout',
     { config: { rateLimit: { max: LOGOUT_RATE_LIMIT, timeWindow: 60_000 } } },
@@ -232,8 +283,6 @@ export default async function authRoutes(fastify: FastifyInstance) {
         }
       }
 
-      // Pass the full COOKIE_BASE attributes so the browser matches the original cookie to clear.
-      // Omitting secure/httpOnly/sameSite can cause the clear to be ignored in production.
       reply.clearCookie('access_token', COOKIE_BASE)
       reply.clearCookie('refresh_token', COOKIE_BASE)
       return reply.status(200).send({ message: 'Logged out' })

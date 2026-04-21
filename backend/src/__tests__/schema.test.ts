@@ -20,17 +20,25 @@ function expectP2002(field: string, err: unknown) {
 
 // Clean up any stale test orgs left by crashed previous runs (#1)
 beforeAll(async () => {
+  // Guard against accidentally running against a shared DB (staging, production).
+  // NODE_ENV must be 'test' — any other value means this suite must not proceed.
+  if (process.env.NODE_ENV !== 'test') {
+    throw new Error('Schema tests must only run in NODE_ENV=test — refusing to delete data in a non-test database')
+  }
   await prisma.organization.deleteMany({ where: { slug: { startsWith: 'test-' } } })
 })
 
 afterAll(async () => {
-  // Primary cleanup — cascades to most child tables via Cascade policy
-  await prisma.organization.deleteMany({ where: { slug: { startsWith: 'test-' } } })
+  // Same guard as beforeAll — Jest runs afterAll even when beforeAll throws, so we must
+  // independently prevent deletes from running against a non-test database.
+  if (process.env.NODE_ENV === 'test') {
+    // Primary cleanup — cascades to most child tables via Cascade policy
+    await prisma.organization.deleteMany({ where: { slug: { startsWith: 'test-' } } })
 
-  // NotificationLog uses SetNull (not Cascade), so rows survive org deletion with null FKs.
-  // Delete orphaned test rows as a safety net — only safe against a dedicated test DB. (#4)
-  await prisma.notificationLog.deleteMany({ where: { subscriberId: null, changelogEntryId: null } })
-
+    // NotificationLog uses SetNull (not Cascade), so rows survive org deletion with null FKs.
+    // Delete orphaned test rows as a safety net — only safe against a dedicated test DB. (#4)
+    await prisma.notificationLog.deleteMany({ where: { subscriberId: null, changelogEntryId: null } })
+  }
   await prisma.$disconnect()
 })
 
@@ -99,6 +107,20 @@ describe('Unique constraints', () => {
     const userA = await makeUser(orgA.id, 'shared@orgs.test')
     const userB = await makeUser(orgB.id, 'shared@orgs.test')
     expect(userA.id).not.toBe(userB.id)
+  })
+
+  it('rejects duplicate googleId across different orgs (global unique)', async () => {
+    const orgA = await makeOrg('googleidA')
+    const orgB = await makeOrg('googleidB')
+    await prisma.user.create({
+      data: { orgId: orgA.id, email: 'ga@googleid.test', name: 'GA', googleId: `gid-${RUN}` },
+    })
+    const err = await prisma.user
+      .create({
+        data: { orgId: orgB.id, email: 'gb@googleid.test', name: 'GB', googleId: `gid-${RUN}` },
+      })
+      .catch((e: unknown) => e)
+    expectP2002('googleId', err)
   })
 
   it('rejects duplicate project slug within same org', async () => {

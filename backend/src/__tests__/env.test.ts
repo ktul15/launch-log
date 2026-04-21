@@ -17,6 +17,15 @@ describe('Environment config validation', () => {
     process.env.REDIS_URL = 'redis://:pw@localhost:6379'
     process.env.JWT_SECRET = 'a'.repeat(32)
     process.env.JWT_REFRESH_SECRET = 'b'.repeat(32)
+    // Clear all optional service vars so tests are deterministic regardless of .env contents
+    for (const key of [
+      'RESEND_API_KEY',
+      'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET',
+      'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET', 'R2_ENDPOINT',
+      'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET',
+    ]) {
+      delete process.env[key]
+    }
   }
 
   it('parses valid env vars without throwing', () => {
