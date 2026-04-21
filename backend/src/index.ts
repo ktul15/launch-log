@@ -78,7 +78,7 @@ const start = async () => {
 }
 
 const gracefulShutdown = async (signal: string) => {
-  console.log(`Received ${signal}, shutting down…`)
+  console.warn(`Received ${signal}, shutting down…`)
   // runningApp may be null if signal arrives before buildApp() resolves
   if (runningApp) {
     // Fastify.close() triggers all onClose hooks (prisma.$disconnect, redis.quit)
