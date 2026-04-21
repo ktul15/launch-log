@@ -1,3 +1,11 @@
+import dotenv from 'dotenv'
+import path from 'path'
+
+// Load .env anchored to this file so the path is correct regardless of cwd.
+// quiet: true suppresses dotenv v17's "injected env (N) from .env" stdout line.
+// In production, env vars are injected directly — dotenv skips silently if file is absent.
+dotenv.config({ path: path.resolve(__dirname, '../.env'), quiet: true })
+
 import Fastify, { FastifyInstance } from 'fastify'
 import { PrismaClientKnownRequestError } from '@prisma/client/runtime/library'
 import { env } from './config/env'
@@ -7,7 +15,7 @@ import { registerRoutes } from './routes'
 export const buildApp = async (): Promise<FastifyInstance> => {
   const app = Fastify({
     logger: {
-      level: env.NODE_ENV === 'test' ? 'silent' : 'info',
+      level: env.NODE_ENV === 'test' ? 'silent' : env.LOG_LEVEL,
       transport:
         env.NODE_ENV === 'development'
           ? { target: 'pino-pretty' }
