@@ -138,10 +138,10 @@ export default async function authRoutes(fastify: FastifyInstance) {
 
       const { orgName, name, email, password } = parsed.data
 
-      // Hash first — both the "email exists" and "email free" paths pay the full bcrypt cost,
-      // preventing a timing oracle that could reveal whether an email is already registered.
       const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS)
 
+      // Global uniqueness check — the DB constraint is per-org but login is not org-scoped,
+      // so the same email in two orgs would make login non-deterministic.
       const existing = await fastify.prisma.user.findFirst({ where: { email } })
       if (existing) {
         return reply.status(409).send({ message: 'Email already registered' })
@@ -270,7 +270,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
       reply.setCookie('access_token', accessToken, { ...COOKIE_BASE, maxAge: ACCESS_MAX_AGE })
       reply.setCookie('refresh_token', refreshToken, { ...COOKIE_BASE, maxAge: REFRESH_MAX_AGE })
 
-      return reply.redirect(FRONTEND_ORIGIN)
+      return reply.redirect(`${FRONTEND_ORIGIN}/dashboard`)
     },
   )
 
@@ -332,7 +332,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
             // if token rotation is ever added. The get→del is not atomic; a concurrent logout
             // would simply find the key already gone and skip the delete, which is harmless for
             // the current single-session-per-user model.
-            if (stored === refreshToken) {
+            if (stored && safeTokenEqual(stored, refreshToken)) {
               await fastify.redis.del(`refresh:${payload.sub}`)
             }
           }
