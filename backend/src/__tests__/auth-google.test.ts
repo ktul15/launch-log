@@ -125,7 +125,7 @@ describe('GET /api/v1/auth/google/callback', () => {
     const res = await app.inject({ method: 'GET', url: '/api/v1/auth/google/callback?code=mock' })
 
     expect(res.statusCode).toBe(302)
-    expect(res.headers['location']).toBe('http://localhost:3000')
+    expect(res.headers['location']).toBe('http://localhost:3000/dashboard')
 
     const cookies = Array.isArray(res.headers['set-cookie'])
       ? res.headers['set-cookie']
@@ -244,8 +244,8 @@ describe('GET /api/v1/auth/google/callback', () => {
     // Both should succeed — the loser falls back to the winner's record
     expect(first.statusCode).toBe(302)
     expect(second.statusCode).toBe(302)
-    expect(first.headers['location']).toBe('http://localhost:3000')
-    expect(second.headers['location']).toBe('http://localhost:3000')
+    expect(first.headers['location']).toBe('http://localhost:3000/dashboard')
+    expect(second.headers['location']).toBe('http://localhost:3000/dashboard')
 
     // Both responses must carry auth cookies — the race loser must not be silently unauthenticated
     const toCookies = (res: typeof first) => {
