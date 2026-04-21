@@ -7,7 +7,7 @@ module.exports = {
     'plugin:@typescript-eslint/recommended',
   ],
   parserOptions: {
-    project: './tsconfig.json',
+    project: './tsconfig.eslint.json',
     tsconfigRootDir: __dirname,
   },
   env: {
@@ -18,7 +18,21 @@ module.exports = {
     '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
     '@typescript-eslint/no-explicit-any': 'error',
     '@typescript-eslint/explicit-function-return-type': 'off',
-    'no-console': ['warn', { allow: ['error', 'log', 'warn'] }],
+    // console.log is forbidden in production source — use fastify.log instead.
+    // console.error and console.warn are allowed for startup/shutdown messages.
+    'no-console': ['error', { allow: ['error', 'warn'] }],
   },
+  overrides: [
+    {
+      // Test files use require() for jest.resetModules() module isolation.
+      // no-explicit-any is relaxed (not disabled) — 'warn' allows intentional casts
+      // in error-object inspection without silently accepting accidental any types.
+      files: ['src/**/__tests__/**/*.ts', 'src/**/*.test.ts'],
+      rules: {
+        '@typescript-eslint/no-require-imports': 'off',
+        '@typescript-eslint/no-explicit-any': 'warn',
+      },
+    },
+  ],
   ignorePatterns: ['dist/', 'node_modules/'],
 }

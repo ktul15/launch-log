@@ -13,13 +13,15 @@ declare module 'fastify' {
 }
 
 const jwt: FastifyPluginAsync = fp(async (fastify) => {
-  // Access tokens: short-lived, signed with JWT_SECRET
+  // Access tokens: short-lived, signed with JWT_SECRET.
+  // cookie.cookieName enables extraction from httpOnly cookie in request.accessVerify().
   await fastify.register(jwtPlugin, {
     secret: env.JWT_SECRET,
     sign: { expiresIn: env.JWT_ACCESS_EXPIRES_IN },
     namespace: 'access',
     jwtVerify: 'accessVerify',
     jwtSign: 'accessSign',
+    cookie: { cookieName: 'access_token', signed: false },
   })
 
   // Refresh tokens: long-lived, signed with a separate JWT_REFRESH_SECRET.
@@ -30,12 +32,24 @@ const jwt: FastifyPluginAsync = fp(async (fastify) => {
     namespace: 'refresh',
     jwtVerify: 'refreshVerify',
     jwtSign: 'refreshSign',
+    cookie: { cookieName: 'refresh_token', signed: false },
   })
 
-  // Cookie extraction for both token types is added in issue #3 when @fastify/cookie is installed.
-  // Add to each registration above:
-  //   cookie: { cookieName: 'access_token', signed: false }  (access)
-  //   cookie: { cookieName: 'refresh_token', signed: false } (refresh)
+  // In @fastify/jwt v8, the namespace option stores instances at fastify.jwt[namespace] rather
+  // than decorating fastify[namespace] directly (see jwt.js line 180: fastify.jwt[namespace] =
+  // jwtDecorator). We extract them and add explicit top-level decorations so route handlers can
+  // use fastify.access.sign() / fastify.refresh.sign() as declared above.
+  // The runtime guard ensures a @fastify/jwt upgrade that changes this behaviour fails fast at
+  // startup rather than silently causing TypeError in the first authenticated request.
+  const namespacedJwt = fastify.jwt as unknown as Record<string, JWT>
+  if (!namespacedJwt.access || !namespacedJwt.refresh) {
+    throw new Error(
+      'JWT namespaces not initialized. Verify that @fastify/jwt is registered with ' +
+        'namespace: "access" and namespace: "refresh" before calling fastify.decorate.',
+    )
+  }
+  fastify.decorate('access', namespacedJwt.access)
+  fastify.decorate('refresh', namespacedJwt.refresh)
 })
 
 export default jwt
