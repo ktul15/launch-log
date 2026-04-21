@@ -3,6 +3,21 @@ import bcrypt from 'bcrypt'
 import { z } from 'zod'
 import crypto from 'crypto'
 import { Organization, User } from '@prisma/client'
+import { ALLOWED_ROLES, Role } from '../config/constants'
+
+// JWT length is structurally determined by the signer so char length ≈ byte length in practice,
+// but we compute byte-length buffers first and guard before calling timingSafeEqual to avoid the
+// RangeError it throws when buffer sizes differ (e.g. multi-byte UTF-8 in a crafted token).
+function safeTokenEqual(a: string, b: string): boolean {
+  try {
+    const ba = Buffer.from(a)
+    const bb = Buffer.from(b)
+    if (ba.length !== bb.length) return false
+    return crypto.timingSafeEqual(ba, bb)
+  } catch {
+    return false
+  }
+}
 import { PrismaClientKnownRequestError } from '@prisma/client/runtime/library'
 import { env } from '../config/env'
 import { googleOAuth } from '../plugins/passport'
@@ -256,6 +271,49 @@ export default async function authRoutes(fastify: FastifyInstance) {
       reply.setCookie('refresh_token', refreshToken, { ...COOKIE_BASE, maxAge: REFRESH_MAX_AGE })
 
       return reply.redirect(FRONTEND_ORIGIN)
+    },
+  )
+
+  fastify.post(
+    '/refresh',
+    { config: { rateLimit: { max: AUTH_RATE_LIMIT, timeWindow: 60_000 } } },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const token = req.cookies['refresh_token']
+      if (!token) {
+        return reply.status(401).send({ message: 'Unauthorized' })
+      }
+
+      let payload: { sub: string; orgId: string; role: string }
+      try {
+        payload = fastify.refresh.verify<{ sub: string; orgId: string; role: string }>(token)
+      } catch (err: unknown) {
+        const code = (err as { code?: string }).code
+        // fast-jwt throws 'FAST_JWT_EXPIRED' on expired tokens (instance-level verify)
+        if (code === 'FAST_JWT_EXPIRED') {
+          return reply.status(401).send({ message: 'Token expired', code: 'TOKEN_EXPIRED' })
+        }
+        return reply.status(401).send({ message: 'Unauthorized' })
+      }
+
+      // Validate claims before using sub as a Redis key or re-signing the token.
+      const { sub, orgId, role } = payload
+      if (
+        typeof sub !== 'string' || !sub ||
+        typeof orgId !== 'string' || !orgId ||
+        !ALLOWED_ROLES.includes(role as Role)
+      ) {
+        return reply.status(401).send({ message: 'Unauthorized' })
+      }
+
+      const stored = await fastify.redis.get(`refresh:${sub}`)
+      // Constant-time compare prevents timing oracle on the stored token value.
+      if (!stored || !safeTokenEqual(stored, token)) {
+        return reply.status(401).send({ message: 'Unauthorized' })
+      }
+
+      const accessToken = fastify.access.sign({ sub, orgId, role: role as Role })
+      reply.setCookie('access_token', accessToken, { ...COOKIE_BASE, maxAge: ACCESS_MAX_AGE })
+      return reply.status(200).send({ message: 'Token refreshed' })
     },
   )
 
