@@ -14,6 +14,8 @@
     "generate": "prisma generate"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1034.0",
+    "@aws-sdk/s3-request-presigner": "^3.1034.0",
     "@fastify/cookie": "^8.3.0",
     "@fastify/cors": "^9.0.0",
     "@fastify/helmet": "^11.0.0",

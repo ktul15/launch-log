@@ -21,7 +21,7 @@ describe('Environment config validation', () => {
     for (const key of [
       'RESEND_API_KEY',
       'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET',
-      'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET', 'R2_ENDPOINT',
+      'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET', 'R2_ENDPOINT', 'R2_PUBLIC_URL',
       'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET',
     ]) {
       delete process.env[key]
@@ -133,6 +133,7 @@ describe('Environment config validation', () => {
     process.env.R2_SECRET_ACCESS_KEY = 'r2-secret'
     process.env.R2_BUCKET = 'my-bucket'
     process.env.R2_ENDPOINT = 'https://abc123.r2.cloudflarestorage.com'
+    process.env.R2_PUBLIC_URL = 'https://pub-abc123.r2.dev'
     process.env.GOOGLE_CLIENT_ID = 'client-id.apps.googleusercontent.com'
     process.env.GOOGLE_CLIENT_SECRET = 'GOCSPX-secret'
     // eslint-disable-next-line @typescript-eslint/no-var-requires
