@@ -288,6 +288,68 @@ describe('POST /api/v1/projects', () => {
     expect(JSON.parse(second.body).message).toContain('Project limit reached')
   })
 
+  it('allows project creation after soft-deleting the only project (isActive filter)', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'create-after-inactive')
+
+    const first = await app.inject({
+      method: 'POST',
+      url: '/api/v1/projects',
+      headers: { cookie },
+      payload: { name: 'To Deactivate', slug: testSlug('after-inactive-1') },
+    })
+    expect(first.statusCode).toBe(201)
+    const { id } = JSON.parse(first.body)
+
+    await prisma.project.update({ where: { id }, data: { isActive: false } })
+
+    const second = await app.inject({
+      method: 'POST',
+      url: '/api/v1/projects',
+      headers: { cookie },
+      payload: { name: 'After Inactive', slug: testSlug('after-inactive-2') },
+    })
+    expect(second.statusCode).toBe(201)
+  })
+
+  it('returns 403 on 4th project when starter org already has 3 (plan limit)', async () => {
+    const { cookie, orgId } = await registerAndGetCookie(app, 'create-starter-limit')
+    await prisma.organization.update({ where: { id: orgId }, data: { plan: 'starter' } })
+
+    for (let i = 1; i <= 3; i++) {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/projects',
+        headers: { cookie },
+        payload: { name: `Starter Project ${i}`, slug: testSlug(`starter-limit-${i}`) },
+      })
+      expect(res.statusCode).toBe(201)
+    }
+
+    const fourth = await app.inject({
+      method: 'POST',
+      url: '/api/v1/projects',
+      headers: { cookie },
+      payload: { name: 'Over Limit', slug: testSlug('starter-limit-4') },
+    })
+    expect(fourth.statusCode).toBe(403)
+    expect(JSON.parse(fourth.body).message).toContain('Project limit reached')
+  })
+
+  it('never blocks project creation for pro plan', async () => {
+    const { cookie, orgId } = await registerAndGetCookie(app, 'create-pro-unlimited')
+    await prisma.organization.update({ where: { id: orgId }, data: { plan: 'pro' } })
+
+    for (let i = 1; i <= 5; i++) {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/projects',
+        headers: { cookie },
+        payload: { name: `Pro Project ${i}`, slug: testSlug(`pro-unlimited-${i}`) },
+      })
+      expect(res.statusCode).toBe(201)
+    }
+  })
+
   it('returns 409 when transaction hits serialization failure (P2034)', async () => {
     const { cookie } = await registerAndGetCookie(app, 'p2034')
 
