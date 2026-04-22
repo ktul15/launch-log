@@ -123,6 +123,9 @@ describe('GET /api/v1/org', () => {
     expect(typeof body.slug).toBe('string')
     expect(typeof body.plan).toBe('string')
     expect(typeof body.createdAt).toBe('string')
+    expect(body.projectCount).toBe(0)
+    // Prisma meta must not leak
+    expect(body._count).toBeUndefined()
     // Sensitive fields must not leak
     expect(body.passwordHash).toBeUndefined()
     expect(body.stripeCustomerId).toBeUndefined()
@@ -276,6 +279,22 @@ describe('PATCH /api/v1/org', () => {
     })
 
     expect(res.statusCode).toBe(422)
+  })
+
+  it('returns 200 for two-character slug', async () => {
+    const { cookie, orgId } = await registerAndGetCookie(app, 'patch-2char-slug')
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/org',
+      headers: { cookie },
+      payload: { slug: 'ab' },
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body).slug).toBe('ab')
+    // Reset slug so cleanup doesn't collide with other tests
+    await app.inject({ method: 'PATCH', url: '/api/v1/org', headers: { cookie }, payload: { slug: `reset-${orgId.slice(0, 8)}` } })
   })
 
   it('returns 422 for slug with leading hyphen', async () => {

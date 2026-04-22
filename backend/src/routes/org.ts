@@ -8,11 +8,12 @@ import { env } from '../config/env'
 const ORG_RATE_LIMIT = env.NODE_ENV === 'test' ? 100_000 : 60
 const ORG_MUTATE_RATE_LIMIT = env.NODE_ENV === 'test' ? 100_000 : 10
 
-// Regex enforces at least 2 chars (one leading + one trailing alphanumeric), no leading/trailing hyphens.
+// Allows single alphanumeric or 2+ chars; no leading/trailing hyphens.
 const slugSchema = z
   .string()
+  .min(2, 'Slug must be at least 2 characters')
   .max(100, 'Slug must be at most 100 characters')
-  .regex(/^[a-z0-9][a-z0-9-]*[a-z0-9]$/, 'Slug must be lowercase alphanumeric with hyphens, no leading or trailing hyphen')
+  .regex(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/, 'Slug must be lowercase alphanumeric with hyphens, no leading or trailing hyphen')
 
 const patchOrgSchema = z.object({
   name: z.string().min(2, 'Organisation name must be at least 2 characters').max(200, 'Organisation name must be at most 200 characters').optional(),
@@ -39,14 +40,18 @@ export default async function orgRoutes(fastify: FastifyInstance) {
 
       const org = await fastify.prisma.organization.findUnique({
         where: { id: orgId },
-        select: { id: true, name: true, slug: true, logoUrl: true, plan: true, createdAt: true },
+        select: {
+          id: true, name: true, slug: true, logoUrl: true, plan: true, createdAt: true,
+          _count: { select: { projects: { where: { isActive: true } } } },
+        },
       })
 
       if (!org) {
         return reply.status(404).send({ message: 'Organisation not found' })
       }
 
-      return reply.send(org)
+      const { _count, ...rest } = org
+      return reply.send({ ...rest, projectCount: _count.projects })
     },
   )
 
@@ -73,6 +78,17 @@ export default async function orgRoutes(fastify: FastifyInstance) {
       }
 
       const { name, slug, logoUrl } = parsed.data
+
+      // When R2 is configured, only accept logo URLs served from the configured CDN domain
+      // to prevent arbitrary HTTPS URLs being stored and later fetched by SSR code.
+      // Enforce trailing slash on base URL so "https://cdn.example.com.evil.com/x" cannot
+      // bypass a "https://cdn.example.com" startsWith check.
+      if (logoUrl !== undefined && env.R2_PUBLIC_URL) {
+        const r2Base = env.R2_PUBLIC_URL.endsWith('/') ? env.R2_PUBLIC_URL : `${env.R2_PUBLIC_URL}/`
+        if (!logoUrl.startsWith(r2Base)) {
+          return reply.status(422).send({ message: 'logoUrl must be served from the configured storage domain' })
+        }
+      }
 
       try {
         const org = await fastify.prisma.organization.update({
