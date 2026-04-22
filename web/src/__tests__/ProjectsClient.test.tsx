@@ -61,6 +61,12 @@ describe('ProjectsClient — rendering', () => {
     render(<ProjectsClient initialProjects={[makeProject()]} />)
     expect(screen.getByRole('button', { name: /new project/i })).toBeInTheDocument()
   })
+
+  it('renders Changelog link with correct href per project', () => {
+    render(<ProjectsClient initialProjects={[makeProject({ id: 'proj-abc' })]} />)
+    const link = screen.getByRole('link', { name: /changelog/i })
+    expect(link).toHaveAttribute('href', '/dashboard/projects/proj-abc/changelog')
+  })
 })
 
 // ─── Modal open/close ─────────────────────────────────────────────────────────

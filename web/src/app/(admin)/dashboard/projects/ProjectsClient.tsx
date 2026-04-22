@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useRef } from 'react'
+import Link from 'next/link'
 import type { Project } from './page'
 import ProjectFormModal from './ProjectFormModal'
 
@@ -117,12 +118,20 @@ export default function ProjectsClient({ initialProjects }: Props) {
                     {project._count.roadmapItems}
                   </td>
                   <td className="px-5 py-4 text-right">
-                    <button
-                      onClick={() => openModal({ mode: 'edit', project })}
-                      className="text-sm text-indigo-600 hover:text-indigo-800 font-medium transition-colors"
-                    >
-                      Edit
-                    </button>
+                    <div className="flex items-center justify-end gap-4">
+                      <Link
+                        href={`/dashboard/projects/${project.id}/changelog`}
+                        className="text-sm text-indigo-600 hover:text-indigo-800 font-medium transition-colors"
+                      >
+                        Changelog
+                      </Link>
+                      <button
+                        onClick={() => openModal({ mode: 'edit', project })}
+                        className="text-sm text-indigo-600 hover:text-indigo-800 font-medium transition-colors"
+                      >
+                        Edit
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
