@@ -1,28 +1,19 @@
 import crypto from 'crypto'
 import { FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import { Prisma, Plan } from '@prisma/client'
+import { Prisma } from '@prisma/client'
 import { PrismaClientKnownRequestError } from '@prisma/client/runtime/library'
 import { authenticate } from '../middleware/authenticate'
 import { env } from '../config/env'
 import { toSlug } from '../utils/slug'
+import { assertPlanLimit, PlanLimitExceededError } from '../utils/planLimits'
 
 const PROJECT_RATE_LIMIT = env.NODE_ENV === 'test' ? 100_000 : 60
 const PROJECT_MUTATE_RATE_LIMIT = env.NODE_ENV === 'test' ? 100_000 : 10
 
-// Typed as Record<Plan, number> so TypeScript enforces exhaustiveness — adding a new plan
-// enum value without a corresponding limit entry becomes a compile error rather than a runtime 500.
-const PLAN_PROJECT_LIMITS: Record<Plan, number> = {
-  free: 1,
-  starter: 3,
-  pro: Infinity,
-}
-
 // Sentinel strings thrown inside transactions so handlers can map them to HTTP responses.
 const TXN_ERR = {
   NOT_FOUND: 'TXN_NOT_FOUND',
-  UNKNOWN_PLAN: 'TXN_UNKNOWN_PLAN',
-  PLAN_LIMIT: 'TXN_PLAN_LIMIT',
 } as const
 
 const MAX_SLUG_ATTEMPTS = 5
@@ -118,9 +109,7 @@ export default async function projectRoutes(fastify: FastifyInstance) {
 
             if (!org) throw new Error(TXN_ERR.NOT_FOUND)
 
-            const limit = PLAN_PROJECT_LIMITS[org.plan]
-            if (limit === undefined) throw new Error(TXN_ERR.UNKNOWN_PLAN)
-            if (org._count.projects >= limit) throw new Error(TXN_ERR.PLAN_LIMIT)
+            assertPlanLimit('projects', org.plan, org._count.projects)
 
             return tx.project.create({
               data: { orgId, name, slug },
@@ -130,15 +119,12 @@ export default async function projectRoutes(fastify: FastifyInstance) {
 
           return reply.status(201).send(project)
         } catch (err) {
-          if (err instanceof Error) {
+          if (err instanceof PlanLimitExceededError) {
+            return reply.status(403).send({ message: 'Project limit reached for your plan' })
+          }
+          if (err instanceof Error && !(err instanceof PrismaClientKnownRequestError)) {
             if (err.message === TXN_ERR.NOT_FOUND) {
               return reply.status(404).send({ message: 'Organisation not found' })
-            }
-            if (err.message === TXN_ERR.UNKNOWN_PLAN) {
-              return reply.status(500).send({ message: 'Unknown plan configuration' })
-            }
-            if (err.message === TXN_ERR.PLAN_LIMIT) {
-              return reply.status(403).send({ message: 'Project limit reached for your plan' })
             }
           }
           if (err instanceof PrismaClientKnownRequestError) {
