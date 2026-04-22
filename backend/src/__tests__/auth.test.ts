@@ -1,7 +1,7 @@
 import crypto from 'crypto'
 import { buildApp } from '../index'
 import { FastifyInstance } from 'fastify'
-import { PrismaClient } from '@prisma/client'
+import { Plan, PrismaClient } from '@prisma/client'
 
 const prisma = new PrismaClient()
 const RUN = crypto.randomUUID().replace(/-/g, '').slice(0, 12)
@@ -200,6 +200,63 @@ describe('POST /api/v1/auth/register', () => {
       payload: { email: testEmail('missing') },
     })
     expect(res.statusCode).toBe(422)
+  })
+
+  it('returns 422 when orgName is shorter than 2 characters', async () => {
+    // Single-char orgName — validation rejects before any DB write, so no cleanup needed.
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/register',
+      payload: { orgName: 'X', name: 'Frank', email: testEmail('short-org'), password: 'password123' },
+    })
+    expect(res.statusCode).toBe(422)
+  })
+
+  it('persists org with plan=free and a valid slug in the database', async () => {
+    const expectedName = testOrgName('db-org')
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/register',
+      payload: {
+        orgName: expectedName,
+        name: 'Grace',
+        email: testEmail('db-org'),
+        password: 'password123',
+      },
+    })
+
+    expect(res.statusCode).toBe(201)
+    const body = JSON.parse(res.body)
+    const org = await prisma.organization.findUnique({ where: { id: body.org.id } })
+    expect(org).not.toBeNull()
+    expect(org!.plan).toBe(Plan.free)
+    expect(org!.name).toBe(expectedName)
+    // Slug must be non-empty, lowercase, no leading/trailing hyphens
+    expect(org!.slug).toMatch(/^[a-z0-9][a-z0-9-]*[a-z0-9]$/)
+  })
+
+  it('persists user with role=owner, correct orgId, and hashed password in the database', async () => {
+    const expectedEmail = testEmail('db-user')
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/register',
+      payload: {
+        orgName: testOrgName('db-user'),
+        name: 'Henry',
+        email: expectedEmail,
+        password: 'password123',
+      },
+    })
+
+    expect(res.statusCode).toBe(201)
+    const body = JSON.parse(res.body)
+    const user = await prisma.user.findUnique({ where: { id: body.user.id } })
+    expect(user).not.toBeNull()
+    expect(user!.role).toBe('owner')
+    expect(user!.orgId).toBe(body.org.id)
+    expect(user!.email).toBe(expectedEmail)
+    // Password must be stored as a bcrypt hash, never as plain text
+    expect(user!.passwordHash).toMatch(/^\$2[ab]\$/)
   })
 })
 

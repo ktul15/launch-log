@@ -13,6 +13,6 @@ export function toSlug(name: string, log?: Logger): string {
   // Non-ASCII names (Cyrillic, CJK, Arabic, etc.) produce an empty slug after stripping.
   // Log so this is visible in server logs — otherwise operators won't know why org URLs
   // look like random hex and users can't guess their own workspace address.
-  ;(log ?? console).warn(`[toSlug] Non-ASCII name produced empty slug — using random hex ID (original: "${name}")`)
+  ;(log ?? console).warn(`[toSlug] Name normalised to fewer than 2 characters — using random hex ID (original: "${name}")`)
   return crypto.randomBytes(4).toString('hex')
 }
