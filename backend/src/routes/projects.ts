@@ -166,7 +166,15 @@ export default async function projectRoutes(fastify: FastifyInstance) {
 
       const projects = await fastify.prisma.project.findMany({
         where: { orgId, isActive: true },
-        select: { id: true, name: true, slug: true, widgetKey: true, createdAt: true },
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+          description: true,
+          widgetKey: true,
+          createdAt: true,
+          _count: { select: { changelogEntries: true, roadmapItems: true } },
+        },
         orderBy: { createdAt: 'asc' },
       })
 
