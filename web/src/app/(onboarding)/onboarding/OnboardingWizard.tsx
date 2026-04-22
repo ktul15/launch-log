@@ -3,13 +3,7 @@
 import { useState, useEffect, FormEvent } from 'react'
 import { useRouter } from 'next/navigation'
 import { apiFetch } from '@/lib/api'
-
-function toClientSlug(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-}
+import { toClientSlug } from '@/lib/slug'
 
 export default function OnboardingWizard() {
   const router = useRouter()

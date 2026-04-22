@@ -411,6 +411,8 @@ describe('GET /api/v1/projects', () => {
     expect(Array.isArray(body)).toBe(true)
     expect(body.length).toBe(1)
     expect(body[0].slug).toBe(slug)
+    expect(body[0].description).toBeNull()
+    expect(body[0]._count).toEqual({ changelogEntries: 0, roadmapItems: 0 })
   })
 
   it('excludes inactive projects from list', async () => {
