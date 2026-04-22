@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import LoginForm from '@/app/(admin)/login/LoginForm'
+import LoginForm from '@/app/login/LoginForm'
 import { apiFetch } from '@/lib/api'
 
 const mockPush = jest.fn()
