@@ -9,6 +9,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   // without needing a separate top-level prefix or sub-plugin nesting.
   await app.register(import('./changelog'), { prefix: '/api/v1/projects' })
   await app.register(import('./roadmap'), { prefix: '/api/v1/projects' })
+  await app.register(import('./features'), { prefix: '/api/v1/projects' })
   // await app.register(import('./public'), { prefix: '/api/v1/public' })
   // await app.register(import('./billing'), { prefix: '/api/v1/billing' })
 
