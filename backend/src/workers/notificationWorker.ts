@@ -239,7 +239,9 @@ export async function processVoteVerificationJob(
     return
   }
 
-  const verifyUrl = new URL('/verify/vote', env.FRONTEND_URL).toString() + '?token=' + encodeURIComponent(vote.verificationToken)
+  const verifyUrlObj = new URL('/verify/vote', env.FRONTEND_URL)
+  verifyUrlObj.searchParams.set('token', vote.verificationToken)
+  const verifyUrl = verifyUrlObj.toString()
 
   const result = await sendEmail({
     to: vote.voterEmail,
