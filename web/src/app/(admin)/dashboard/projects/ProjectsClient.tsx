@@ -125,6 +125,12 @@ export default function ProjectsClient({ initialProjects }: Props) {
                       >
                         Changelog
                       </Link>
+                      <Link
+                        href={`/dashboard/projects/${project.id}/roadmap`}
+                        className="text-sm text-indigo-600 hover:text-indigo-800 font-medium transition-colors"
+                      >
+                        Roadmap
+                      </Link>
                       <button
                         onClick={() => openModal({ mode: 'edit', project })}
                         className="text-sm text-indigo-600 hover:text-indigo-800 font-medium transition-colors"
