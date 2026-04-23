@@ -283,6 +283,7 @@ model NotificationLog {
 
   @@index([subscriberId])
   @@index([changelogEntryId])
+  @@index([type, referenceId])
   @@map("notification_logs")
 }
 

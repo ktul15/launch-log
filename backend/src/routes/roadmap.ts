@@ -271,10 +271,10 @@ export default async function roadmapRoutes(fastify: FastifyInstance) {
         return reply.status(404).send({ message: 'Project not found' })
       }
 
-      const updated = await fastify.prisma.$transaction(async (tx) => {
+      const result = await fastify.prisma.$transaction(async (tx) => {
         const existing = await tx.roadmapItem.findFirst({
           where: { id: itemId, projectId },
-          select: { id: true },
+          select: { id: true, status: true },
         })
         if (!existing) return null
 
@@ -283,15 +283,31 @@ export default async function roadmapRoutes(fastify: FastifyInstance) {
         if ('description' in parsed.data) data.description = parsed.data.description
         if (parsed.data.status !== undefined) data.status = parsed.data.status
 
-        return tx.roadmapItem.update({
+        const updated = await tx.roadmapItem.update({
           where: { id: itemId },
           data,
           select: ITEM_SELECT,
         })
+
+        return { previousStatus: existing.status, updated }
       })
 
-      if (!updated) {
+      if (!result) {
         return reply.status(404).send({ message: 'Roadmap item not found' })
+      }
+
+      const { previousStatus, updated } = result
+
+      if (previousStatus !== 'shipped' && updated.status === 'shipped') {
+        try {
+          await fastify.notificationQueue.add('feature_shipped', {
+            type: 'feature_shipped',
+            referenceId: itemId,
+            projectId,
+          })
+        } catch (err) {
+          req.log.error({ itemId, err }, 'roadmap: failed to enqueue feature_shipped job')
+        }
       }
 
       return reply.send(updated)

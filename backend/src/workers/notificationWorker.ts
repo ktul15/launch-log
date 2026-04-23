@@ -2,7 +2,7 @@ import { Worker } from 'bullmq'
 import { PrismaClient } from '@prisma/client'
 import type { FastifyBaseLogger } from 'fastify'
 import { createBullMQConnection, NotificationJobData } from '../jobs/index'
-import { sendChangelogEmail, SendResult } from '../services/emailService'
+import { sendChangelogEmail, sendFeatureShippedEmail, SendResult } from '../services/emailService'
 import { env } from '../config/env'
 
 type ProcessDeps = {
@@ -109,6 +109,101 @@ export async function processChangelogPublishedJob(
   log.info({ entryId, total: pending.length, sent }, 'notification worker: batch complete')
 }
 
+type FeatureShippedDeps = {
+  prisma: PrismaClient
+  log: FastifyBaseLogger
+  sendEmail: (opts: { to: string; itemTitle: string; roadmapUrl: string }) => Promise<SendResult>
+}
+
+export async function processFeatureShippedJob(
+  data: NotificationJobData,
+  deps: FeatureShippedDeps,
+): Promise<void> {
+  if (data.type !== 'feature_shipped') return
+
+  const { referenceId: itemId, projectId } = data
+  const { prisma, log, sendEmail } = deps
+
+  const item = await prisma.roadmapItem.findFirst({
+    where: { id: itemId, projectId, status: 'shipped' },
+    select: {
+      title: true,
+      project: { select: { slug: true } },
+    },
+  })
+
+  if (!item) {
+    log.warn({ itemId, projectId }, 'notification worker: roadmap item not found or no longer shipped, skipping')
+    return
+  }
+
+  const roadmapUrl = `${env.FRONTEND_URL}/p/${item.project.slug}/roadmap`
+
+  const subscribers = await prisma.subscriber.findMany({
+    where: { projectId, verified: true },
+    select: { id: true, email: true },
+  })
+
+  if (subscribers.length === 0) return
+
+  const alreadyNotified = await prisma.notificationLog.findMany({
+    where: {
+      type: 'feature_shipped',
+      referenceId: itemId,
+      subscriberId: { in: subscribers.map((s) => s.id) },
+    },
+    select: { subscriberId: true },
+  })
+  const notifiedIds = new Set(alreadyNotified.map((n) => n.subscriberId))
+
+  const pending = subscribers.filter((s) => !notifiedIds.has(s.id))
+  if (pending.length === 0) {
+    log.info({ itemId }, 'notification worker: all subscribers already notified, skipping')
+    return
+  }
+
+  const results = await Promise.allSettled(
+    pending.map(async (subscriber) => {
+      const result = await sendEmail({
+        to: subscriber.email,
+        itemTitle: item.title,
+        roadmapUrl,
+      })
+
+      if (!result.ok) {
+        log.warn(
+          { subscriberId: subscriber.id, error: result.error },
+          'notification worker: email send failed, skipping log entry',
+        )
+        return { sent: false }
+      }
+
+      await prisma.notificationLog.create({
+        data: {
+          subscriberId: subscriber.id,
+          type: 'feature_shipped',
+          referenceId: itemId,
+        },
+      })
+      return { sent: true }
+    }),
+  )
+
+  let sent = 0
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      log.error(
+        { itemId, err: result.reason },
+        'notification worker: log create failed after email sent — duplicate risk on retry',
+      )
+    } else if (result.value.sent) {
+      sent++
+    }
+  }
+
+  log.info({ itemId, total: pending.length, sent }, 'notification worker: batch complete')
+}
+
 // Exported for use in tests to assert failed-event behavior without a real Worker
 export function handleWorkerFailedEvent(
   job: { id?: string; attemptsMade: number; opts: { attempts?: number } } | undefined,
@@ -131,7 +226,15 @@ export function createNotificationWorker(
 
   const worker = new Worker<NotificationJobData>(
     'notifications',
-    (job) => processChangelogPublishedJob(job.data, { prisma, log, sendEmail: sendChangelogEmail }),
+    async (job) => {
+      if (job.data.type === 'changelog_published') {
+        return processChangelogPublishedJob(job.data, { prisma, log, sendEmail: sendChangelogEmail })
+      }
+      if (job.data.type === 'feature_shipped') {
+        return processFeatureShippedJob(job.data, { prisma, log, sendEmail: sendFeatureShippedEmail })
+      }
+      log.warn({ type: job.data.type }, 'notification worker: unknown job type, skipping')
+    },
     { connection, concurrency: 5 },
   )
 

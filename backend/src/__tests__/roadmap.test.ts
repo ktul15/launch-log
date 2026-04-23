@@ -96,6 +96,8 @@ let app: FastifyInstance
 beforeAll(async () => {
   await prisma.organization.deleteMany({ where: { name: { contains: RUN } } })
   app = await buildApp()
+  // Stub queue so tests don't write to Redis
+  app.notificationQueue.add = jest.fn().mockResolvedValue({})
 })
 
 afterAll(async () => {
@@ -664,5 +666,126 @@ describe('PATCH /api/v1/projects/:projectId/roadmap/reorder', () => {
     // Item in project A must be unchanged
     const item = await prisma.roadmapItem.findUnique({ where: { id: itemInA } })
     expect(item?.displayOrder).toBe(0)
+  })
+})
+
+// ─── Notification job enqueueing on status → shipped ─────────────────────────
+
+describe('PATCH roadmap item — feature_shipped job enqueuing', () => {
+  beforeEach(() => {
+    ;(app.notificationQueue.add as jest.Mock).mockClear()
+  })
+
+  it('enqueues feature_shipped job when status transitions in_progress → shipped', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'enqueue-in-progress')
+    const projectId = await createProject(app, cookie, 'enqueue-in-progress')
+    const itemId = await createItem(app, cookie, projectId, { status: 'in_progress' })
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/projects/${projectId}/roadmap/${itemId}`,
+      headers: { cookie },
+      payload: { status: 'shipped' },
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(app.notificationQueue.add).toHaveBeenCalledTimes(1)
+    expect(app.notificationQueue.add).toHaveBeenCalledWith('feature_shipped', {
+      type: 'feature_shipped',
+      referenceId: itemId,
+      projectId,
+    })
+  })
+
+  it('enqueues feature_shipped job when status transitions planned → shipped', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'enqueue-planned')
+    const projectId = await createProject(app, cookie, 'enqueue-planned')
+    const itemId = await createItem(app, cookie, projectId)
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/projects/${projectId}/roadmap/${itemId}`,
+      headers: { cookie },
+      payload: { status: 'shipped' },
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(app.notificationQueue.add).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not enqueue when item is already shipped', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'enqueue-already-shipped')
+    const projectId = await createProject(app, cookie, 'enqueue-already-shipped')
+    const itemId = await createItem(app, cookie, projectId, { status: 'shipped' })
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/projects/${projectId}/roadmap/${itemId}`,
+      headers: { cookie },
+      payload: { status: 'shipped' },
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(app.notificationQueue.add).not.toHaveBeenCalled()
+  })
+
+  it('does not enqueue when status changes to in_progress', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'enqueue-not-shipped')
+    const projectId = await createProject(app, cookie, 'enqueue-not-shipped')
+    const itemId = await createItem(app, cookie, projectId)
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/projects/${projectId}/roadmap/${itemId}`,
+      headers: { cookie },
+      payload: { status: 'in_progress' },
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(app.notificationQueue.add).not.toHaveBeenCalled()
+  })
+
+  it('does not enqueue when only title is updated', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'enqueue-title-only')
+    const projectId = await createProject(app, cookie, 'enqueue-title-only')
+    const itemId = await createItem(app, cookie, projectId)
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/projects/${projectId}/roadmap/${itemId}`,
+      headers: { cookie },
+      payload: { title: 'Updated title' },
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(app.notificationQueue.add).not.toHaveBeenCalled()
+  })
+
+  it('does not enqueue on second PATCH to shipped (planned → shipped → shipped)', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'enqueue-double-shipped')
+    const projectId = await createProject(app, cookie, 'enqueue-double-shipped')
+    const itemId = await createItem(app, cookie, projectId)
+
+    // First PATCH: planned → shipped — must enqueue
+    await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/projects/${projectId}/roadmap/${itemId}`,
+      headers: { cookie },
+      payload: { status: 'shipped' },
+    })
+    expect(app.notificationQueue.add).toHaveBeenCalledTimes(1)
+
+    ;(app.notificationQueue.add as jest.Mock).mockClear()
+
+    // Second PATCH: shipped → shipped — must not enqueue again
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/projects/${projectId}/roadmap/${itemId}`,
+      headers: { cookie },
+      payload: { status: 'shipped' },
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(app.notificationQueue.add).not.toHaveBeenCalled()
   })
 })
