@@ -149,7 +149,7 @@ export default function ChangelogEntryForm(props: Props) {
           <label className="block text-sm font-medium text-gray-700 mb-1">
             Content <span className="text-red-500">*</span>
           </label>
-          <RichTextEditor content={content} onChange={setContent} />
+          <RichTextEditor content={content} onChange={setContent} projectId={projectId} />
         </div>
 
         <div className="flex items-center gap-3 pt-2">

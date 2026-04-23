@@ -3,6 +3,20 @@ import { buildApp } from '../index'
 import { FastifyInstance } from 'fastify'
 import { PrismaClient } from '@prisma/client'
 
+// Mock r2 so tests don't need real R2 credentials. Default: R2 not configured.
+const mockGetR2Client = jest.fn<ReturnType<typeof import('../services/r2').getR2Client>, []>()
+const mockCreateProjectImagePresignedUrl = jest.fn<
+  ReturnType<typeof import('../services/r2').createProjectImagePresignedUrl>,
+  [string, string]
+>()
+
+jest.mock('../services/r2', () => ({
+  getR2Client: () => mockGetR2Client(),
+  createProjectImagePresignedUrl: (projectId: string, mimeType: string) =>
+    mockCreateProjectImagePresignedUrl(projectId, mimeType),
+  createLogoPresignedUrl: jest.fn(),
+}))
+
 const prisma = new PrismaClient()
 const RUN = crypto.randomUUID().replace(/-/g, '').slice(0, 12)
 
@@ -84,6 +98,10 @@ beforeAll(async () => {
   app = await buildApp()
   // Stub out queue so tests don't write to Redis and can assert job enqueueing
   app.notificationQueue.add = jest.fn().mockResolvedValue({})
+})
+
+beforeEach(() => {
+  mockGetR2Client.mockReturnValue(null)
 })
 
 afterAll(async () => {
@@ -1231,5 +1249,135 @@ describe('archived entry guard', () => {
 
     expect(res.statusCode).toBe(409)
     expect(JSON.parse(res.body).message).toContain('Archived entries cannot be edited')
+  })
+})
+
+// ─── POST /api/v1/projects/:projectId/changelog/image-upload-url ─────────────
+
+describe('POST /api/v1/projects/:projectId/changelog/image-upload-url', () => {
+  it('returns 503 when R2 not configured', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'img-no-r2')
+    const projectId = await createProject(app, cookie, 'img-no-r2')
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/projects/${projectId}/changelog/image-upload-url`,
+      headers: { cookie },
+      payload: { mimeType: 'image/jpeg' },
+    })
+
+    expect(res.statusCode).toBe(503)
+    expect(JSON.parse(res.body).message).toBe('Image upload not configured')
+  })
+
+  it('returns 422 for disallowed MIME type', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'img-bad-mime')
+    const projectId = await createProject(app, cookie, 'img-bad-mime')
+    mockGetR2Client.mockReturnValue({} as ReturnType<typeof import('../services/r2').getR2Client>)
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/projects/${projectId}/changelog/image-upload-url`,
+      headers: { cookie },
+      payload: { mimeType: 'application/pdf' },
+    })
+
+    expect(res.statusCode).toBe(422)
+  })
+
+  it('returns 422 when mimeType missing', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'img-no-mime')
+    const projectId = await createProject(app, cookie, 'img-no-mime')
+    mockGetR2Client.mockReturnValue({} as ReturnType<typeof import('../services/r2').getR2Client>)
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/projects/${projectId}/changelog/image-upload-url`,
+      headers: { cookie },
+      payload: {},
+    })
+
+    expect(res.statusCode).toBe(422)
+  })
+
+  it('returns 200 with uploadUrl and publicUrl when R2 configured', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'img-r2-ok')
+    const projectId = await createProject(app, cookie, 'img-r2-ok')
+    mockGetR2Client.mockReturnValue({} as ReturnType<typeof import('../services/r2').getR2Client>)
+    mockCreateProjectImagePresignedUrl.mockResolvedValue({
+      uploadUrl: 'https://upload.r2.example.com/signed',
+      publicUrl: 'https://cdn.example.com/projects/proj/images/1.jpg',
+      key: 'projects/proj/images/1.jpg',
+    })
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/projects/${projectId}/changelog/image-upload-url`,
+      headers: { cookie },
+      payload: { mimeType: 'image/jpeg' },
+    })
+
+    expect(res.statusCode).toBe(200)
+    const body = JSON.parse(res.body)
+    expect(body.uploadUrl).toBe('https://upload.r2.example.com/signed')
+    expect(body.publicUrl).toBe('https://cdn.example.com/projects/proj/images/1.jpg')
+    expect(body.key).toBeUndefined()
+  })
+
+  it('returns 404 for project not in org', async () => {
+    const { cookie: cookie1 } = await registerAndGetCookie(app, 'img-cross-org-a')
+    const { cookie: cookie2 } = await registerAndGetCookie(app, 'img-cross-org-b')
+    const projectId = await createProject(app, cookie1, 'img-cross-proj')
+    mockGetR2Client.mockReturnValue({} as ReturnType<typeof import('../services/r2').getR2Client>)
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/projects/${projectId}/changelog/image-upload-url`,
+      headers: { cookie: cookie2 },
+      payload: { mimeType: 'image/png' },
+    })
+
+    expect(res.statusCode).toBe(404)
+  })
+
+  it('returns 403 when editor requests upload URL', async () => {
+    const { cookie, orgId } = await registerAndGetCookie(app, 'img-editor-org')
+    const projectId = await createProject(app, cookie, 'img-editor-proj')
+    const editorCookie = await createEditorCookie(app, orgId, 'img-editor-user')
+    mockGetR2Client.mockReturnValue({} as ReturnType<typeof import('../services/r2').getR2Client>)
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/projects/${projectId}/changelog/image-upload-url`,
+      headers: { cookie: editorCookie },
+      payload: { mimeType: 'image/png' },
+    })
+
+    expect(res.statusCode).toBe(403)
+  })
+
+  it('returns 401 when unauthenticated', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/projects/00000000-0000-0000-0000-000000000000/changelog/image-upload-url',
+      payload: { mimeType: 'image/jpeg' },
+    })
+    expect(res.statusCode).toBe(401)
+  })
+
+  it('returns 500 when R2 service throws', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'img-r2-throw')
+    const projectId = await createProject(app, cookie, 'img-r2-throw')
+    mockGetR2Client.mockReturnValue({} as ReturnType<typeof import('../services/r2').getR2Client>)
+    mockCreateProjectImagePresignedUrl.mockRejectedValue(new Error('R2 network error'))
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/projects/${projectId}/changelog/image-upload-url`,
+      headers: { cookie },
+      payload: { mimeType: 'image/jpeg' },
+    })
+
+    expect(res.statusCode).toBe(500)
   })
 })

@@ -22,6 +22,38 @@ export function getR2Client(): S3Client | null {
   return cachedClient
 }
 
+const MIME_TO_EXT: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+}
+
+export async function createProjectImagePresignedUrl(
+  projectId: string,
+  mimeType: string,
+): Promise<{ uploadUrl: string; publicUrl: string; key: string }> {
+  const client = getR2Client()
+  if (!client) {
+    throw new Error('R2 not configured')
+  }
+
+  const ext = MIME_TO_EXT[mimeType] ?? 'jpg'
+  const key = `projects/${projectId}/images/${Date.now()}.${ext}`
+  // ContentType intentionally omitted — binding the presigned signature to a concrete type
+  // causes R2 to reject uploads if the client sends a header with any suffix (e.g. charset).
+  // Matches the pattern in createLogoPresignedUrl.
+  const command = new PutObjectCommand({
+    Bucket: env.R2_BUCKET!,
+    Key: key,
+  })
+
+  const uploadUrl = await getSignedUrl(client, command, { expiresIn: 300 })
+  const publicUrl = `${env.R2_PUBLIC_URL!.replace(/\/$/, '')}/${key}`
+
+  return { uploadUrl, publicUrl, key }
+}
+
 export async function createLogoPresignedUrl(
   orgId: string,
 ): Promise<{ uploadUrl: string; publicUrl: string; key: string }> {
