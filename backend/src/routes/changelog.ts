@@ -3,9 +3,12 @@ import { z } from 'zod'
 import { Prisma } from '@prisma/client'
 import { authenticate } from '../middleware/authenticate'
 import { env } from '../config/env'
+import { getR2Client, createProjectImagePresignedUrl } from '../services/r2'
+import { ALLOWED_IMAGE_TYPES } from '../plugins/multipart'
 
 const RATE_LIMIT = env.NODE_ENV === 'test' ? 100_000 : 60
 const MUTATE_RATE_LIMIT = env.NODE_ENV === 'test' ? 100_000 : 10
+const IMAGE_UPLOAD_RATE_LIMIT = env.NODE_ENV === 'test' ? 100_000 : 20
 
 // Sentinel strings thrown inside transactions so handlers can map them to HTTP responses.
 const TXN_ERR = {
@@ -170,6 +173,52 @@ export default async function changelogRoutes(fastify: FastifyInstance) {
       })
 
       return reply.status(201).send(entry)
+    },
+  )
+
+  // POST /api/v1/projects/:projectId/changelog/image-upload-url — get presigned R2 URL for editor image
+  // Must be registered before /:projectId/changelog/:entryId to avoid "image-upload-url" matching :entryId.
+  fastify.post(
+    '/:projectId/changelog/image-upload-url',
+    {
+      onRequest: [authenticate],
+      config: { rateLimit: { max: IMAGE_UPLOAD_RATE_LIMIT, timeWindow: 60_000 } },
+    },
+    async (req, reply) => {
+      const { orgId, role } = req.user
+      const { projectId } = req.params as { projectId: string }
+
+      if (role !== 'owner') {
+        return reply.status(403).send({ message: 'Only organisation owners can upload images' })
+      }
+
+      if (!isUUID(projectId)) {
+        return reply.status(404).send({ message: 'Project not found' })
+      }
+
+      if (!getR2Client()) {
+        return reply.status(503).send({ message: 'Image upload not configured' })
+      }
+
+      const parsed = z.object({ mimeType: z.string().max(100) }).safeParse(req.body)
+      if (!parsed.success) {
+        return reply.status(422).send({ message: 'mimeType is required' })
+      }
+
+      if (!ALLOWED_IMAGE_TYPES.includes(parsed.data.mimeType)) {
+        return reply.status(422).send({ message: `Allowed types: ${ALLOWED_IMAGE_TYPES.join(', ')}` })
+      }
+
+      const project = await fastify.prisma.project.findFirst({
+        where: { id: projectId, orgId, isActive: true },
+        select: { id: true },
+      })
+      if (!project) {
+        return reply.status(404).send({ message: 'Project not found' })
+      }
+
+      const result = await createProjectImagePresignedUrl(projectId, parsed.data.mimeType)
+      return reply.send({ uploadUrl: result.uploadUrl, publicUrl: result.publicUrl })
     },
   )
 
@@ -453,4 +502,5 @@ export default async function changelogRoutes(fastify: FastifyInstance) {
       return reply.send(entry)
     },
   )
+
 }

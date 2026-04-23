@@ -110,7 +110,7 @@ describe('RichTextEditor', () => {
     })
   })
 
-  it('prompts for URL on Image button click', () => {
+  it('prompts for URL on Image button click when no projectId', () => {
     window.prompt = jest.fn(() => 'https://example.com/img.png')
     render(<RichTextEditor content={CONTENT} onChange={jest.fn()} />)
     fireEvent.mouseDown(screen.getByTitle('Image'))
@@ -126,12 +126,86 @@ describe('RichTextEditor', () => {
     expect(mockChain).not.toHaveBeenCalled()
   })
 
-  it('rejects javascript: URL for Image and shows alert', () => {
+  it('rejects javascript: URL for Image and shows alert when no projectId', () => {
     window.prompt = jest.fn(() => 'javascript:alert(1)')
     window.alert = jest.fn()
     render(<RichTextEditor content={CONTENT} onChange={jest.fn()} />)
     fireEvent.mouseDown(screen.getByTitle('Image'))
     expect(window.alert).toHaveBeenCalledWith('Only http:// and https:// URLs are allowed.')
     expect(mockChain).not.toHaveBeenCalled()
+  })
+
+  it('does not call prompt when projectId provided — uses file input instead', () => {
+    window.prompt = jest.fn()
+    render(<RichTextEditor content={CONTENT} onChange={jest.fn()} projectId="proj-1" />)
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
+    const clickSpy = jest.spyOn(fileInput, 'click').mockImplementation(() => {})
+    fireEvent.mouseDown(screen.getByTitle('Image'))
+    expect(window.prompt).not.toHaveBeenCalled()
+    expect(clickSpy).toHaveBeenCalled()
+  })
+
+  it('rejects disallowed MIME type via file input', async () => {
+    window.alert = jest.fn()
+    render(<RichTextEditor content={CONTENT} onChange={jest.fn()} projectId="proj-1" />)
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
+    const file = new File(['x'], 'doc.pdf', { type: 'application/pdf' })
+    Object.defineProperty(fileInput, 'files', { value: [file], configurable: true })
+    fireEvent.change(fileInput)
+    expect(window.alert).toHaveBeenCalledWith('Allowed image types: JPEG, PNG, GIF, WebP.')
+  })
+
+  it('rejects file over 5MB via file input', async () => {
+    window.alert = jest.fn()
+    render(<RichTextEditor content={CONTENT} onChange={jest.fn()} projectId="proj-1" />)
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
+    const bigContent = new Uint8Array(6 * 1024 * 1024)
+    const file = new File([bigContent], 'big.jpg', { type: 'image/jpeg' })
+    Object.defineProperty(fileInput, 'files', { value: [file], configurable: true })
+    fireEvent.change(fileInput)
+    expect(window.alert).toHaveBeenCalledWith('Image must be 5 MB or smaller.')
+  })
+
+  it('fetches presigned URL and uploads file on valid image', async () => {
+    const publicUrl = 'https://cdn.example.com/projects/proj-1/images/123.jpg'
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ uploadUrl: 'https://r2.example.com/upload', publicUrl }),
+      } as Response)
+      .mockResolvedValueOnce({ ok: true } as Response)
+
+    render(<RichTextEditor content={CONTENT} onChange={jest.fn()} projectId="proj-1" />)
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
+    const file = new File(['img'], 'photo.jpg', { type: 'image/jpeg' })
+    Object.defineProperty(fileInput, 'files', { value: [file], configurable: true })
+    fireEvent.change(fileInput)
+
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(global.fetch).toHaveBeenCalledTimes(2)
+    const [firstCall, secondCall] = (global.fetch as jest.Mock).mock.calls
+    expect(firstCall[0]).toBe('/api/v1/projects/proj-1/changelog/image-upload-url')
+    expect(secondCall[0]).toBe('https://r2.example.com/upload')
+    expect(secondCall[1]).toMatchObject({ method: 'PUT', headers: { 'Content-Type': 'image/jpeg' } })
+  })
+
+  it('shows alert when presigned URL request fails', async () => {
+    window.alert = jest.fn()
+    global.fetch = jest.fn().mockResolvedValueOnce({
+      ok: false,
+      json: async () => ({ message: 'Image upload not configured' }),
+    } as Response)
+
+    render(<RichTextEditor content={CONTENT} onChange={jest.fn()} projectId="proj-1" />)
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
+    const file = new File(['img'], 'photo.png', { type: 'image/png' })
+    Object.defineProperty(fileInput, 'files', { value: [file], configurable: true })
+    fireEvent.change(fileInput)
+
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(window.alert).toHaveBeenCalledWith('Image upload not configured')
   })
 })
