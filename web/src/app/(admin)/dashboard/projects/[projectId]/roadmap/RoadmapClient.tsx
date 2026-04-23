@@ -77,12 +77,13 @@ interface SortableCardProps {
   item: RoadmapItem
   onEdit: (item: RoadmapItem) => void
   onDelete: (itemId: string) => void
+  onStatusChange: (itemId: string, newStatus: RoadmapStatus) => void
   confirmDeleteId: string | null
   setConfirmDeleteId: (id: string | null) => void
   loadingIds: Set<string>
 }
 
-function SortableCard({ item, onEdit, onDelete, confirmDeleteId, setConfirmDeleteId, loadingIds }: SortableCardProps) {
+function SortableCard({ item, onEdit, onDelete, onStatusChange, confirmDeleteId, setConfirmDeleteId, loadingIds }: SortableCardProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id })
 
   const style = {
@@ -107,42 +108,57 @@ function SortableCard({ item, onEdit, onDelete, confirmDeleteId, setConfirmDelet
         <p className="text-xs text-gray-500 leading-relaxed line-clamp-2 mb-2">{item.description}</p>
       )}
       <div
-        className="flex items-center justify-end gap-2 pt-1"
+        className="flex items-center justify-between gap-2 pt-1"
         onPointerDown={(e) => e.stopPropagation()}
       >
-        {isConfirming ? (
-          <>
-            <button
-              onClick={() => onDelete(item.id)}
-              disabled={isLoading}
-              className="text-xs text-red-600 hover:text-red-800 font-medium disabled:opacity-50"
-            >
-              {isLoading ? 'Deleting…' : 'Confirm'}
-            </button>
-            <button
-              onClick={() => setConfirmDeleteId(null)}
-              className="text-xs text-gray-500 hover:text-gray-700"
-            >
-              Cancel
-            </button>
-          </>
-        ) : (
-          <>
-            <button
-              onClick={() => onEdit(item)}
-              className="text-xs text-indigo-600 hover:text-indigo-800 font-medium"
-            >
-              Edit
-            </button>
-            <button
-              onClick={() => setConfirmDeleteId(item.id)}
-              disabled={isLoading}
-              className="text-xs text-red-500 hover:text-red-700 font-medium disabled:opacity-50"
-            >
-              Delete
-            </button>
-          </>
-        )}
+        <select
+          value={item.status}
+          onChange={(e) => {
+            const s = e.target.value as RoadmapStatus
+            if (COLUMN_ORDER.includes(s)) onStatusChange(item.id, s)
+          }}
+          disabled={isLoading}
+          className="text-xs px-1.5 py-0.5 rounded border border-gray-200 bg-gray-50 text-gray-600 cursor-pointer disabled:opacity-50 focus:outline-none focus:border-indigo-300"
+        >
+          <option value="planned">Planned</option>
+          <option value="in_progress">In Progress</option>
+          <option value="shipped">Shipped</option>
+        </select>
+        <div className="flex items-center gap-2">
+          {isConfirming ? (
+            <>
+              <button
+                onClick={() => onDelete(item.id)}
+                disabled={isLoading}
+                className="text-xs text-red-600 hover:text-red-800 font-medium disabled:opacity-50"
+              >
+                {isLoading ? 'Deleting…' : 'Confirm'}
+              </button>
+              <button
+                onClick={() => setConfirmDeleteId(null)}
+                className="text-xs text-gray-500 hover:text-gray-700"
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                onClick={() => onEdit(item)}
+                className="text-xs text-indigo-600 hover:text-indigo-800 font-medium"
+              >
+                Edit
+              </button>
+              <button
+                onClick={() => setConfirmDeleteId(item.id)}
+                disabled={isLoading}
+                className="text-xs text-red-500 hover:text-red-700 font-medium disabled:opacity-50"
+              >
+                Delete
+              </button>
+            </>
+          )}
+        </div>
       </div>
     </div>
   )
@@ -183,20 +199,41 @@ export default function RoadmapClient({ projectId, projectName, initialItems }: 
   const columnsRef = useRef<Columns>(columns)
   columnsRef.current = columns
 
-  // Prevents concurrent drags while a save is in flight
+  // Prevents concurrent drags/saves while a save is in flight
   const isSavingRef = useRef(false)
+
+  // Sync mirror of loadingIds for reads inside async handlers (state reads are stale)
+  const loadingIdsRef = useRef<Set<string>>(new Set())
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   )
 
   const addLoading = useCallback((id: string) => {
+    loadingIdsRef.current.add(id)
     setLoadingIds((prev) => new Set(prev).add(id))
   }, [])
 
   const removeLoading = useCallback((id: string) => {
+    loadingIdsRef.current.delete(id)
     setLoadingIds((prev) => { const n = new Set(prev); n.delete(id); return n })
   }, [])
+
+  // Functional revert — moves itemId back to sourceCol without overwriting concurrent changes
+  function revertItem(itemId: string, sourceCol: RoadmapStatus) {
+    setColumns((prev) => {
+      const next: Columns = { planned: [...prev.planned], in_progress: [...prev.in_progress], shipped: [...prev.shipped] }
+      for (const s of COLUMN_ORDER) {
+        const idx = next[s].findIndex((i) => i.id === itemId)
+        if (idx !== -1) {
+          const [moved] = next[s].splice(idx, 1)
+          next[sourceCol].push({ ...moved, status: sourceCol })
+          break
+        }
+      }
+      return next
+    })
+  }
 
   const handleDragStart = useCallback(({ active }: DragStartEvent) => {
     for (const status of COLUMN_ORDER) {
@@ -311,6 +348,64 @@ export default function RoadmapClient({ projectId, projectName, initialItems }: 
     }
   }
 
+  async function handleStatusChange(itemId: string, newStatus: RoadmapStatus) {
+    // Block if drag save in flight (2.2) or this item already has an op in flight (2.1, 2.3)
+    if (isSavingRef.current || loadingIdsRef.current.has(itemId)) return
+
+    const currentColumns = columnsRef.current
+    const sourceCol = findItemColumn(currentColumns, itemId)
+    if (!sourceCol || sourceCol === newStatus) return
+
+    const item = currentColumns[sourceCol].find((i) => i.id === itemId)
+    if (!item) return  // 1.2: guard against deleted item
+
+    // Compute next state synchronously so reorder payload is stable (6.2)
+    const nextCols: Columns = {
+      planned: [...currentColumns.planned],
+      in_progress: [...currentColumns.in_progress],
+      shipped: [...currentColumns.shipped],
+    }
+    nextCols[sourceCol] = nextCols[sourceCol].filter((i) => i.id !== itemId)
+    nextCols[newStatus] = [...nextCols[newStatus], { ...item, status: newStatus }]
+
+    addLoading(itemId)
+    setError(null)
+    isSavingRef.current = true   // 2.2: explicit guard blocks concurrent drags
+    setIsSaving(true)            // 4.1: show Saving… indicator
+    setColumns(nextCols)
+
+    try {
+      const statusRes = await apiFetch(`/api/v1/projects/${projectId}/roadmap/${itemId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: newStatus }),
+      })
+      if (!statusRes.ok) {
+        const body = await statusRes.json().catch(() => ({}))
+        setError((body as { message?: string }).message ?? 'Failed to update status.')
+        revertItem(itemId, sourceCol)  // 1.1: functional revert preserves concurrent changes
+        return
+      }
+
+      // Sync displayOrder to DB so reload positions are correct (6.2)
+      const reorderRes = await apiFetch(`/api/v1/projects/${projectId}/roadmap/reorder`, {
+        method: 'PATCH',
+        body: JSON.stringify({ items: assignDisplayOrders(nextCols) }),
+      })
+      if (!reorderRes.ok) {
+        const body = await reorderRes.json().catch(() => ({}))
+        setError((body as { message?: string }).message ?? 'Failed to save order.')
+        revertItem(itemId, sourceCol)  // 1.1
+      }
+    } catch {
+      setError('Network error. Status not updated.')
+      revertItem(itemId, sourceCol)  // 1.1
+    } finally {
+      removeLoading(itemId)
+      isSavingRef.current = false
+      setIsSaving(false)
+    }
+  }
+
   function handleModalSave(saved: RoadmapItem) {
     // Capture modal state before any batched state updates run
     const isEdit = modal?.mode === 'edit'
@@ -404,6 +499,7 @@ export default function RoadmapClient({ projectId, projectName, initialItems }: 
                           item={item}
                           onEdit={(i) => setModal({ mode: 'edit', item: i })}
                           onDelete={handleDelete}
+                          onStatusChange={handleStatusChange}
                           confirmDeleteId={confirmDeleteId}
                           setConfirmDeleteId={setConfirmDeleteId}
                           loadingIds={loadingIds}
