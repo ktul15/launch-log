@@ -82,6 +82,8 @@ let app: FastifyInstance
 beforeAll(async () => {
   await prisma.organization.deleteMany({ where: { name: { contains: RUN } } })
   app = await buildApp()
+  // Stub out queue so tests don't write to Redis and can assert job enqueueing
+  app.notificationQueue.add = jest.fn().mockResolvedValue({})
 })
 
 afterAll(async () => {
@@ -814,6 +816,112 @@ describe('POST /api/v1/projects/:projectId/changelog/:entryId/publish', () => {
       url: '/api/v1/projects/00000000-0000-0000-0000-000000000000/changelog/00000000-0000-0000-0000-000000000000/publish',
     })
     expect(res.statusCode).toBe(401)
+  })
+
+  it('enqueues changelog_published job on first publish', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'publish-queue-first')
+    const projectId = await createProject(app, cookie, 'publish-queue-first')
+
+    const created = await app.inject({
+      method: 'POST',
+      url: `/api/v1/projects/${projectId}/changelog`,
+      headers: { cookie },
+      payload: { title: 'Queue Test', content: CONTENT },
+    })
+    const { id } = JSON.parse(created.body)
+
+    const addSpy = app.notificationQueue.add as jest.Mock
+    addSpy.mockClear()
+
+    await app.inject({
+      method: 'POST',
+      url: `/api/v1/projects/${projectId}/changelog/${id}/publish`,
+      headers: { cookie },
+    })
+
+    expect(addSpy).toHaveBeenCalledTimes(1)
+    expect(addSpy).toHaveBeenCalledWith('changelog_published', {
+      type: 'changelog_published',
+      referenceId: id,
+      projectId,
+    })
+  })
+
+  it('does not enqueue job on re-publish of already-published entry', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'publish-queue-idempotent')
+    const projectId = await createProject(app, cookie, 'publish-queue-idempotent')
+
+    const created = await app.inject({
+      method: 'POST',
+      url: `/api/v1/projects/${projectId}/changelog`,
+      headers: { cookie },
+      payload: { title: 'Idempotent Queue', content: CONTENT },
+    })
+    const { id } = JSON.parse(created.body)
+
+    // First publish
+    await app.inject({
+      method: 'POST',
+      url: `/api/v1/projects/${projectId}/changelog/${id}/publish`,
+      headers: { cookie },
+    })
+
+    const addSpy = app.notificationQueue.add as jest.Mock
+    addSpy.mockClear()
+
+    // Second publish — entry already published, no job
+    await app.inject({
+      method: 'POST',
+      url: `/api/v1/projects/${projectId}/changelog/${id}/publish`,
+      headers: { cookie },
+    })
+
+    expect(addSpy).not.toHaveBeenCalled()
+  })
+
+  it('re-enqueues job after unpublish then republish (worker dedup handles duplicates)', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'publish-queue-requeue')
+    const projectId = await createProject(app, cookie, 'publish-queue-requeue')
+
+    const created = await app.inject({
+      method: 'POST',
+      url: `/api/v1/projects/${projectId}/changelog`,
+      headers: { cookie },
+      payload: { title: 'Requeue Test', content: CONTENT },
+    })
+    const { id } = JSON.parse(created.body)
+
+    // First publish — enqueues
+    await app.inject({
+      method: 'POST',
+      url: `/api/v1/projects/${projectId}/changelog/${id}/publish`,
+      headers: { cookie },
+    })
+
+    // Unpublish — clears publishedAt
+    await app.inject({
+      method: 'POST',
+      url: `/api/v1/projects/${projectId}/changelog/${id}/unpublish`,
+      headers: { cookie },
+    })
+
+    const addSpy = app.notificationQueue.add as jest.Mock
+    addSpy.mockClear()
+
+    // Re-publish — publishedAt was null, so job is enqueued again
+    // Worker dedup (notification_logs check) prevents actual duplicate email delivery
+    await app.inject({
+      method: 'POST',
+      url: `/api/v1/projects/${projectId}/changelog/${id}/publish`,
+      headers: { cookie },
+    })
+
+    expect(addSpy).toHaveBeenCalledTimes(1)
+    expect(addSpy).toHaveBeenCalledWith('changelog_published', {
+      type: 'changelog_published',
+      referenceId: id,
+      projectId,
+    })
   })
 })
 

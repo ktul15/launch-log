@@ -8,6 +8,7 @@ import cookiePlugin from './cookie'
 import passportPlugin from './passport'
 import jwtPlugin from './jwt'
 import multipartPlugin from './multipart'
+import queuePlugin from './queue'
 
 export async function registerPlugins(app: FastifyInstance): Promise<void> {
   // Security first — must be registered before any routes
@@ -18,6 +19,7 @@ export async function registerPlugins(app: FastifyInstance): Promise<void> {
   // Infrastructure — database and cache connections
   await app.register(prismaPlugin)
   await app.register(redisPlugin)
+  await app.register(queuePlugin)
 
   // Cookie support must be registered before JWT
   await app.register(cookiePlugin)
