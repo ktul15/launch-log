@@ -20,6 +20,13 @@ const FEATURE_SELECT_PUBLIC = {
 type PublicFeature = Prisma.FeatureRequestGetPayload<{ select: typeof FEATURE_SELECT_PUBLIC }>
 
 const PROJECT_KEY_MAX_LEN = 64
+const FEATURE_ID_MAX_LEN = 36
+const VERIFY_TOKEN_MAX_LEN = 128
+
+const uuidSchema = z.string().uuid()
+function isUUID(s: string): boolean {
+  return uuidSchema.safeParse(s).success
+}
 
 const submitFeatureSchema = z
   .object({
@@ -30,8 +37,24 @@ const submitFeatureSchema = z
       .max(1000, 'Description must be at most 1000 characters')
       .nullable()
       .optional(),
-    email: z.string().email('Invalid email address'),
+    email: z
+      .string()
+      .email('Invalid email address')
+      .transform((s) => s.toLowerCase()),
   })
+  .strict()
+
+const voteSchema = z
+  .object({
+    email: z
+      .string()
+      .email('Invalid email address')
+      .transform((s) => s.toLowerCase()),
+  })
+  .strict()
+
+const verifyVoteSchema = z
+  .object({ token: z.string().min(1, 'Token is required').max(VERIFY_TOKEN_MAX_LEN, 'Invalid token') })
   .strict()
 
 // HMAC-SHA256 with the server JWT secret — one-way and not reversible without the key.
@@ -115,6 +138,130 @@ export default async function publicRoutes(fastify: FastifyInstance) {
       }
 
       return reply.status(201).send(feature)
+    },
+  )
+
+  // POST /:projectKey/features/:featureId/vote
+  fastify.post(
+    '/:projectKey/features/:featureId/vote',
+    {
+      config: { rateLimit: { max: PUBLIC_RATE_LIMIT, timeWindow: 3_600_000 } },
+    },
+    async (req, reply) => {
+      const { projectKey, featureId } = req.params as { projectKey: string; featureId: string }
+
+      if (projectKey.length > PROJECT_KEY_MAX_LEN) {
+        return reply.status(404).send({ message: 'Project not found' })
+      }
+
+      if (featureId.length > FEATURE_ID_MAX_LEN || !isUUID(featureId)) {
+        return reply.status(404).send({ message: 'Feature not found' })
+      }
+
+      const parsed = voteSchema.safeParse(req.body)
+      if (!parsed.success) {
+        const messages = parsed.error.issues.map((i) => i.message).join(', ')
+        return reply.status(400).send({ message: messages })
+      }
+
+      const { email } = parsed.data
+
+      const project = await fastify.prisma.project.findUnique({
+        where: { widgetKey: projectKey },
+        select: { id: true },
+      })
+      if (!project) {
+        return reply.status(404).send({ message: 'Project not found' })
+      }
+
+      // Reject votes on closed or shipped features — status is no longer actionable
+      const feature = await fastify.prisma.featureRequest.findFirst({
+        where: { id: featureId, projectId: project.id, status: { notIn: ['closed', 'shipped'] } },
+        select: { id: true },
+      })
+      if (!feature) {
+        return reply.status(404).send({ message: 'Feature not found' })
+      }
+
+      const verificationToken = crypto.randomUUID()
+      const ipHash = hashIp(req.ip)
+
+      let voteId: string
+
+      try {
+        const vote = await fastify.prisma.vote.create({
+          data: {
+            featureRequestId: feature.id,
+            voterEmail: email,
+            verified: false,
+            verificationToken,
+            ipHash,
+          },
+          select: { id: true },
+        })
+        voteId = vote.id
+      } catch (err) {
+        if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+          return reply.status(409).send({ statusCode: 409, error: 'Conflict', message: 'Already voted' })
+        }
+        throw err
+      }
+
+      try {
+        await fastify.notificationQueue.add('vote_verification', {
+          type: 'vote_verification',
+          referenceId: voteId,
+          projectId: project.id,
+        })
+      } catch (err) {
+        req.log.error({ voteId, err }, 'public: failed to enqueue vote_verification — vote exists but email will not be sent')
+      }
+
+      return reply.status(200).send({ message: 'Verification email sent' })
+    },
+  )
+
+  // POST /verify-vote
+  fastify.post(
+    '/verify-vote',
+    {
+      config: { rateLimit: { max: PUBLIC_RATE_LIMIT, timeWindow: 3_600_000 } },
+    },
+    async (req, reply) => {
+      const parsed = verifyVoteSchema.safeParse(req.body)
+      if (!parsed.success) {
+        const messages = parsed.error.issues.map((i) => i.message).join(', ')
+        return reply.status(400).send({ message: messages })
+      }
+
+      const { token } = parsed.data
+
+      const vote = await fastify.prisma.vote.findUnique({
+        where: { verificationToken: token },
+        select: { id: true, featureRequestId: true },
+      })
+
+      if (!vote) {
+        return reply.status(400).send({ message: 'Invalid or expired token' })
+      }
+
+      // Atomic gate: only one concurrent request wins the UPDATE WHERE verified = false.
+      // The losing request sees count = 0 and returns idempotent success.
+      const updated = await fastify.prisma.vote.updateMany({
+        where: { id: vote.id, verified: false },
+        data: { verified: true },
+      })
+
+      if (updated.count === 0) {
+        return reply.status(200).send({ message: 'Already verified' })
+      }
+
+      await fastify.prisma.featureRequest.update({
+        where: { id: vote.featureRequestId },
+        data: { voteCount: { increment: 1 } },
+      })
+
+      return reply.status(200).send({ message: 'Vote verified' })
     },
   )
 }
