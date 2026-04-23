@@ -2,7 +2,7 @@ import { Worker } from 'bullmq'
 import { PrismaClient } from '@prisma/client'
 import type { FastifyBaseLogger } from 'fastify'
 import { createBullMQConnection, NotificationJobData } from '../jobs/index'
-import { sendChangelogEmail, sendFeatureShippedEmail, SendResult } from '../services/emailService'
+import { sendChangelogEmail, sendFeatureShippedEmail, sendVoteVerificationEmail, SendResult } from '../services/emailService'
 import { env } from '../config/env'
 
 type ProcessDeps = {
@@ -204,6 +204,55 @@ export async function processFeatureShippedJob(
   log.info({ itemId, total: pending.length, sent }, 'notification worker: batch complete')
 }
 
+type VoteVerificationDeps = {
+  prisma: PrismaClient
+  log: FastifyBaseLogger
+  sendEmail: (opts: { to: string; featureTitle: string; verifyUrl: string }) => Promise<SendResult>
+}
+
+export async function processVoteVerificationJob(
+  data: NotificationJobData,
+  deps: VoteVerificationDeps,
+): Promise<void> {
+  if (data.type !== 'vote_verification') return
+
+  const { referenceId: voteId, projectId } = data
+  const { prisma, log, sendEmail } = deps
+
+  const vote = await prisma.vote.findFirst({
+    where: { id: voteId, featureRequest: { projectId } },
+    select: {
+      verified: true,
+      voterEmail: true,
+      verificationToken: true,
+      featureRequest: { select: { title: true } },
+    },
+  })
+
+  if (!vote) {
+    log.warn({ voteId, projectId }, 'notification worker: vote not found, skipping')
+    return
+  }
+
+  if (vote.verified) {
+    log.info({ voteId }, 'notification worker: vote already verified, skipping')
+    return
+  }
+
+  const verifyUrl = new URL('/verify/vote', env.FRONTEND_URL).toString() + '?token=' + encodeURIComponent(vote.verificationToken)
+
+  const result = await sendEmail({
+    to: vote.voterEmail,
+    featureTitle: vote.featureRequest.title,
+    verifyUrl,
+  })
+
+  if (!result.ok) {
+    // Throw so BullMQ retries — a transient email failure should not silently drop the verification
+    throw new Error(`vote verification email failed: ${result.error}`)
+  }
+}
+
 // Exported for use in tests to assert failed-event behavior without a real Worker
 export function handleWorkerFailedEvent(
   job: { id?: string; attemptsMade: number; opts: { attempts?: number } } | undefined,
@@ -232,6 +281,9 @@ export function createNotificationWorker(
       }
       if (job.data.type === 'feature_shipped') {
         return processFeatureShippedJob(job.data, { prisma, log, sendEmail: sendFeatureShippedEmail })
+      }
+      if (job.data.type === 'vote_verification') {
+        return processVoteVerificationJob(job.data, { prisma, log, sendEmail: sendVoteVerificationEmail })
       }
       log.warn({ type: job.data.type }, 'notification worker: unknown job type, skipping')
     },

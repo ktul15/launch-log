@@ -110,3 +110,43 @@ function buildFeatureShippedHtml(opts: SendFeatureShippedEmailOptions): string {
 function buildFeatureShippedText(opts: SendFeatureShippedEmailOptions): string {
   return `Roadmap item shipped: ${opts.itemTitle}\n\nView it here: ${opts.roadmapUrl}`
 }
+
+export type SendVoteVerificationEmailOptions = {
+  to: string
+  featureTitle: string
+  verifyUrl: string
+}
+
+export async function sendVoteVerificationEmail(opts: SendVoteVerificationEmailOptions): Promise<SendResult> {
+  const client = getResendClient()
+  if (!client) {
+    return { ok: false, error: 'Resend not configured — RESEND_API_KEY missing' }
+  }
+  try {
+    await client.emails.send({
+      from: env.RESEND_FROM_EMAIL,
+      to: opts.to,
+      subject: `Verify your vote for: ${stripNewlines(opts.featureTitle)}`,
+      html: buildVoteVerificationHtml(opts),
+      text: buildVoteVerificationText(opts),
+    })
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+function buildVoteVerificationHtml(opts: SendVoteVerificationEmailOptions): string {
+  const safeTitle = escHtml(opts.featureTitle)
+  const safeUrl = escHtml(opts.verifyUrl)
+  return [
+    '<p>You requested to vote for a feature. Click the link below to verify your vote:</p>',
+    `<p><strong>${safeTitle}</strong></p>`,
+    `<p><a href="${safeUrl}">Verify my vote</a></p>`,
+    '<p>If you did not submit this vote, you can ignore this email.</p>',
+  ].join('\n')
+}
+
+function buildVoteVerificationText(opts: SendVoteVerificationEmailOptions): string {
+  return `You requested to vote for: ${stripNewlines(opts.featureTitle)}\n\nVerify your vote here: ${opts.verifyUrl}\n\nIf you did not submit this vote, you can ignore this email.`
+}
