@@ -173,8 +173,10 @@ export default function ChangelogClient({ projectId, projectName, initialEntries
                     <td className="px-5 py-4 font-medium text-gray-900 max-w-xs truncate">
                       {entry.title}
                     </td>
-                    <td className="px-5 py-4 font-mono text-gray-500">
-                      {entry.version ?? '—'}
+                    <td className="px-5 py-4">
+                      {entry.version
+                        ? <span className="inline-flex max-w-[10rem] truncate px-2 py-0.5 rounded-full text-xs font-medium font-mono bg-indigo-50 text-indigo-700" title={entry.version}>{entry.version}</span>
+                        : <span className="text-gray-400">—</span>}
                     </td>
                     <td className="px-5 py-4">
                       <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${statusBadgeClass(entry.status)}`}>
