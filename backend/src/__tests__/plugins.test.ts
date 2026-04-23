@@ -23,6 +23,11 @@ describe('Plugin registration', () => {
     expect(typeof app.redis.ping).toBe('function')
   })
 
+  it('decorates fastify instance with notification queue', () => {
+    expect(app.notificationQueue).toBeDefined()
+    expect(typeof app.notificationQueue.add).toBe('function')
+  })
+
   it('GET /api/v1 returns version and status', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/v1' })
     expect(res.statusCode).toBe(200)

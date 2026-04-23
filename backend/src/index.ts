@@ -7,10 +7,12 @@ import path from 'path'
 dotenv.config({ path: path.resolve(__dirname, '../.env'), quiet: true })
 
 import Fastify, { FastifyInstance } from 'fastify'
+import { Worker } from 'bullmq'
 import { PrismaClientKnownRequestError } from '@prisma/client/runtime/library'
 import { env } from './config/env'
 import { registerPlugins } from './plugins'
 import { registerRoutes } from './routes'
+import { createNotificationWorker } from './workers/notificationWorker'
 
 export const buildApp = async (): Promise<FastifyInstance> => {
   const app = Fastify({
@@ -61,10 +63,14 @@ export const buildApp = async (): Promise<FastifyInstance> => {
 }
 
 let runningApp: FastifyInstance | null = null
+let runningWorker: Worker | null = null
 
 const start = async () => {
   try {
     runningApp = await buildApp()
+    // Worker must start after buildApp() so app.prisma is available.
+    // Worker uses prisma — it must close before app.close() disconnects prisma.
+    runningWorker = createNotificationWorker(runningApp.prisma, runningApp.log)
     await runningApp.listen({ port: env.PORT, host: '0.0.0.0' })
   } catch (err) {
     // runningApp may be null if buildApp() threw before assigning
@@ -79,9 +85,12 @@ const start = async () => {
 
 const gracefulShutdown = async (signal: string) => {
   console.warn(`Received ${signal}, shutting down…`)
-  // runningApp may be null if signal arrives before buildApp() resolves
+  // Close worker before app — worker processor uses prisma, which app.close() disconnects
+  if (runningWorker) {
+    await runningWorker.close()
+  }
+  // Fastify.close() triggers all onClose hooks (prisma.$disconnect, redis.quit, queue.close)
   if (runningApp) {
-    // Fastify.close() triggers all onClose hooks (prisma.$disconnect, redis.quit)
     await runningApp.close()
   }
   process.exit(0)

@@ -53,6 +53,8 @@ const baseSchema = z.object({
 
   // External services — optional at startup; validated when each service is first used
   RESEND_API_KEY: z.string().optional(),
+  FRONTEND_URL: z.string().url().default('http://localhost:3000'),
+  RESEND_FROM_EMAIL: z.string().email().default('notifications@updates.launchlog.app'),
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().regex(/^whsec_/, 'Must start with whsec_').optional(),
   R2_ACCESS_KEY_ID: z.string().optional(),

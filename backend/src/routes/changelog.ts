@@ -360,31 +360,47 @@ export default async function changelogRoutes(fastify: FastifyInstance) {
         return reply.status(404).send({ message: 'Project not found' })
       }
 
-      // Transaction makes the existence check and write atomic. publishedAt is only set on first
-      // publish to preserve the original timestamp for RSS feeds and notification deduplication —
-      // re-publishing after an edit must not shift the entry's position in subscriber feeds.
-      const entry = await fastify.prisma.$transaction(async (tx) => {
+      // Transaction makes the existence check and write atomic. publishedAt is only set when
+      // it was null — either the true first publish, or a re-publish after unpublish (unpublish
+      // clears publishedAt). This preserves the original timestamp for RSS feed ordering.
+      const result = await fastify.prisma.$transaction(async (tx) => {
         const existing = await tx.changelogEntry.findFirst({
           where: { id: entryId, projectId },
           select: { id: true, publishedAt: true },
         })
         if (!existing) return null
 
-        return tx.changelogEntry.update({
+        // publishedAtWasNull is true for both the true first publish AND any re-publish after
+        // unpublish (which clears publishedAt). The notification worker deduplicates via
+        // notification_logs, so subscribers who already received an email are not re-notified.
+        const publishedAtWasNull = existing.publishedAt === null
+        const entry = await tx.changelogEntry.update({
           where: { id: entryId },
           data: {
             status: 'published',
-            ...(existing.publishedAt === null ? { publishedAt: new Date() } : {}),
+            ...(publishedAtWasNull ? { publishedAt: new Date() } : {}),
           },
           select: ENTRY_SELECT,
         })
+        return { entry, publishedAtWasNull }
       })
 
-      if (!entry) {
+      if (!result) {
         return reply.status(404).send({ message: 'Changelog entry not found' })
       }
 
-      return reply.send(entry)
+      // Enqueue notification job when publishedAt was null. Await ensures the job is durably
+      // written to Redis before responding — if Redis is down, the caller gets a 500 and can
+      // retry rather than silently losing the notification.
+      if (result.publishedAtWasNull) {
+        await fastify.notificationQueue.add('changelog_published', {
+          type: 'changelog_published',
+          referenceId: entryId,
+          projectId,
+        })
+      }
+
+      return reply.send(result.entry)
     },
   )
 
