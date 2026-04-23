@@ -381,6 +381,121 @@ describe('RoadmapClient — error banner', () => {
   })
 })
 
+// ─── Inline status dropdown ───────────────────────────────────────────────────
+
+describe('RoadmapClient — inline status dropdown', () => {
+  it('renders a status select on each card showing current status', () => {
+    const item = makeItem({ status: 'planned' })
+    render(<RoadmapClient {...DEFAULT_PROPS} initialItems={[item]} />)
+    const select = screen.getByRole('combobox') as HTMLSelectElement
+    expect(select.value).toBe('planned')
+  })
+
+  it('moves card to new column and calls status PATCH then reorder PATCH', async () => {
+    const user = userEvent.setup()
+    // 5.4: use Once so any extra unexpected call would fail the assertion count
+    mockApiFetch
+      .mockResolvedValueOnce({ ok: true, json: async () => ({}) } as Response)  // status PATCH
+      .mockResolvedValueOnce({ ok: true, json: async () => ({}) } as Response)  // reorder PATCH
+
+    const item = makeItem({ status: 'planned' })
+    render(<RoadmapClient {...DEFAULT_PROPS} initialItems={[item]} />)
+
+    const select = screen.getByRole('combobox')
+    await user.selectOptions(select, 'in_progress')
+
+    await waitFor(() => expect(mockApiFetch).toHaveBeenCalledTimes(2))
+    expect(mockApiFetch).toHaveBeenNthCalledWith(
+      1,
+      `/api/v1/projects/${PROJECT_ID}/roadmap/item-1`,
+      expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ status: 'in_progress' }) }),
+    )
+    expect(mockApiFetch).toHaveBeenNthCalledWith(
+      2,
+      `/api/v1/projects/${PROJECT_ID}/roadmap/reorder`,
+      expect.objectContaining({ method: 'PATCH' }),
+    )
+  })
+
+  it('reverts card to source column and shows error banner on status PATCH failure', async () => {
+    const user = userEvent.setup()
+    mockApiFetch.mockResolvedValueOnce({
+      ok: false,
+      json: async () => ({ message: 'Status update failed' }),
+    } as Response)
+
+    const item = makeItem({ status: 'planned' })
+    render(<RoadmapClient {...DEFAULT_PROPS} initialItems={[item]} />)
+
+    const select = screen.getByRole('combobox')
+    await user.selectOptions(select, 'shipped')
+
+    await waitFor(() => expect(screen.getByText('Status update failed')).toBeInTheDocument())
+    // 5.1: verify card is in Planned column — find the header <span>, not the <option>
+    const plannedHeader = screen.getAllByText('Planned').find((el) => el.tagName === 'SPAN')
+    const plannedCol = plannedHeader?.closest('[class*="rounded-xl"]')
+    expect(plannedCol).not.toBeNull()
+    expect(plannedCol).toContainElement(screen.getByRole('combobox'))
+    // select value reflects reverted status
+    expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('planned')
+  })
+
+  it('does nothing when same status selected', async () => {
+    const user = userEvent.setup()
+    const item = makeItem({ status: 'in_progress' })
+    render(<RoadmapClient {...DEFAULT_PROPS} initialItems={[item]} />)
+
+    const select = screen.getByRole('combobox')
+    await user.selectOptions(select, 'in_progress')
+
+    expect(mockApiFetch).not.toHaveBeenCalled()
+  })
+
+  it('blocks second status change for same item while first is in flight (2.3)', async () => {
+    const user = userEvent.setup()
+    let resolveFirst!: (v: Response) => void
+    mockApiFetch.mockImplementationOnce(
+      () => new Promise<Response>((res) => { resolveFirst = res }),
+    )
+
+    const item = makeItem({ status: 'planned' })
+    render(<RoadmapClient {...DEFAULT_PROPS} initialItems={[item]} />)
+
+    const select = screen.getByRole('combobox')
+    // first change — fires, stays in flight
+    await user.selectOptions(select, 'in_progress')
+    // second change — should be blocked (item is in loadingIds)
+    await user.selectOptions(select, 'shipped')
+
+    // Only one API call started despite two dropdown changes
+    expect(mockApiFetch).toHaveBeenCalledTimes(1)
+
+    // Resolve first call so loading state clears
+    resolveFirst({ ok: true, json: async () => ({}) } as Response)
+  })
+
+  it('disables select while delete is in flight (2.1)', async () => {
+    const user = userEvent.setup()
+    let resolveDelete!: (v: Response) => void
+    mockApiFetch.mockImplementationOnce(
+      () => new Promise<Response>((res) => { resolveDelete = res }),
+    )
+
+    const item = makeItem({ status: 'planned' })
+    render(<RoadmapClient {...DEFAULT_PROPS} initialItems={[item]} />)
+
+    // Start delete flow
+    await user.click(screen.getByRole('button', { name: 'Delete' }))
+    await user.click(screen.getByRole('button', { name: 'Confirm' }))
+
+    // Select must be disabled while delete is in flight
+    expect(screen.getByRole('combobox')).toBeDisabled()
+
+    resolveDelete({ ok: true, json: async () => ({}) } as Response)
+    await waitFor(() => expect(screen.queryByRole('combobox')).not.toBeInTheDocument())
+  })
+})
+
 // ─── Modal close ──────────────────────────────────────────────────────────────
 
 describe('RoadmapClient — modal close', () => {
