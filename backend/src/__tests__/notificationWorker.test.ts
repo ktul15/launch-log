@@ -1,4 +1,4 @@
-import { processChangelogPublishedJob, handleWorkerFailedEvent } from '../workers/notificationWorker'
+import { processChangelogPublishedJob, processFeatureShippedJob, handleWorkerFailedEvent } from '../workers/notificationWorker'
 import { NotificationJobData } from '../jobs/index'
 import { SendResult } from '../services/emailService'
 
@@ -228,5 +228,192 @@ describe('handleWorkerFailedEvent', () => {
     const log = makeLog()
     expect(() => handleWorkerFailedEvent(undefined, new Error('crash'), log)).not.toThrow()
     expect(log.warn).toHaveBeenCalled()
+  })
+})
+
+type ShippedSendFn = (opts: { to: string; itemTitle: string; roadmapUrl: string }) => Promise<SendResult>
+
+function makeShippedJob(overrides: Partial<NotificationJobData> = {}): NotificationJobData {
+  return {
+    type: 'feature_shipped',
+    referenceId: 'item-uuid-1',
+    projectId: 'project-uuid-1',
+    ...overrides,
+  }
+}
+
+function makeShippedDeps(overrides: {
+  findFirst?: jest.Mock
+  findMany?: jest.Mock
+  notificationLogFindMany?: jest.Mock
+  createLog?: jest.Mock
+  sendEmail?: jest.Mock
+} = {}) {
+  const findFirst = overrides.findFirst ?? jest.fn().mockResolvedValue({
+    title: 'Dark mode',
+    project: { slug: 'acme' },
+  })
+
+  const subscriberFindMany = overrides.findMany ?? jest.fn().mockResolvedValue([
+    { id: 'sub-1', email: 'a@example.com' },
+  ])
+
+  const notificationLogFindMany = overrides.notificationLogFindMany ?? jest.fn().mockResolvedValue([])
+
+  const createLog = overrides.createLog ?? jest.fn().mockResolvedValue({})
+
+  const sendEmail: jest.Mock<Promise<SendResult>> =
+    overrides.sendEmail ?? jest.fn().mockResolvedValue({ ok: true })
+
+  const prisma = {
+    roadmapItem: { findFirst },
+    subscriber: { findMany: subscriberFindMany },
+    notificationLog: {
+      findMany: notificationLogFindMany,
+      create: createLog,
+    },
+  } as unknown as Parameters<typeof processFeatureShippedJob>[1]['prisma']
+
+  const log = {
+    warn: jest.fn(),
+    info: jest.fn(),
+    error: jest.fn(),
+  } as unknown as Parameters<typeof processFeatureShippedJob>[1]['log']
+
+  return { prisma, log, sendEmail: sendEmail as ShippedSendFn, mocks: { findFirst, subscriberFindMany, notificationLogFindMany, createLog, sendEmail } }
+}
+
+describe('processFeatureShippedJob', () => {
+  it('returns early for non-feature_shipped type', async () => {
+    const { prisma, log, sendEmail, mocks } = makeShippedDeps()
+    await processFeatureShippedJob(makeShippedJob({ type: 'changelog_published' }), { prisma, log, sendEmail })
+    expect(mocks.findFirst).not.toHaveBeenCalled()
+    expect(mocks.subscriberFindMany).not.toHaveBeenCalled()
+  })
+
+  it('returns early + warns when roadmap item not found or no longer shipped', async () => {
+    const { prisma, log, sendEmail, mocks } = makeShippedDeps({
+      findFirst: jest.fn().mockResolvedValue(null),
+    })
+    await processFeatureShippedJob(makeShippedJob(), { prisma, log, sendEmail })
+    expect(mocks.subscriberFindMany).not.toHaveBeenCalled()
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ itemId: 'item-uuid-1' }),
+      expect.stringContaining('no longer shipped'),
+    )
+  })
+
+  it('returns early when no verified subscribers', async () => {
+    const { prisma, log, sendEmail, mocks } = makeShippedDeps({
+      findMany: jest.fn().mockResolvedValue([]),
+    })
+    await processFeatureShippedJob(makeShippedJob(), { prisma, log, sendEmail })
+    expect(mocks.sendEmail).not.toHaveBeenCalled()
+  })
+
+  it('skips already-notified subscribers', async () => {
+    const { prisma, log, sendEmail, mocks } = makeShippedDeps({
+      findMany: jest.fn().mockResolvedValue([
+        { id: 'sub-1', email: 'a@example.com' },
+        { id: 'sub-2', email: 'b@example.com' },
+      ]),
+      notificationLogFindMany: jest.fn().mockResolvedValue([
+        { subscriberId: 'sub-1' },
+        { subscriberId: 'sub-2' },
+      ]),
+    })
+    await processFeatureShippedJob(makeShippedJob(), { prisma, log, sendEmail })
+    expect(mocks.sendEmail).not.toHaveBeenCalled()
+    expect(log.info).toHaveBeenCalledWith(
+      expect.objectContaining({ itemId: 'item-uuid-1' }),
+      expect.stringContaining('already notified'),
+    )
+  })
+
+  it('sends only to unnotified subscribers', async () => {
+    const { prisma, log, sendEmail, mocks } = makeShippedDeps({
+      findMany: jest.fn().mockResolvedValue([
+        { id: 'sub-1', email: 'a@example.com' },
+        { id: 'sub-2', email: 'b@example.com' },
+      ]),
+      notificationLogFindMany: jest.fn().mockResolvedValue([
+        { subscriberId: 'sub-1' },
+      ]),
+    })
+    await processFeatureShippedJob(makeShippedJob(), { prisma, log, sendEmail })
+    expect(mocks.sendEmail).toHaveBeenCalledTimes(1)
+    expect(mocks.sendEmail).toHaveBeenCalledWith(expect.objectContaining({ to: 'b@example.com' }))
+  })
+
+  it('creates notification log row on successful send', async () => {
+    const { prisma, log, sendEmail, mocks } = makeShippedDeps()
+    await processFeatureShippedJob(makeShippedJob(), { prisma, log, sendEmail })
+    expect(mocks.createLog).toHaveBeenCalledTimes(1)
+    expect(mocks.createLog).toHaveBeenCalledWith({
+      data: {
+        subscriberId: 'sub-1',
+        type: 'feature_shipped',
+        referenceId: 'item-uuid-1',
+      },
+    })
+  })
+
+  it('does not create log row when send fails, continues to next subscriber', async () => {
+    const { prisma, log, sendEmail, mocks } = makeShippedDeps({
+      findMany: jest.fn().mockResolvedValue([
+        { id: 'sub-1', email: 'a@example.com' },
+        { id: 'sub-2', email: 'b@example.com' },
+      ]),
+      sendEmail: jest.fn()
+        .mockResolvedValueOnce({ ok: false, error: 'Bounced' })
+        .mockResolvedValueOnce({ ok: true }),
+    })
+    await processFeatureShippedJob(makeShippedJob(), { prisma, log, sendEmail })
+    expect(mocks.createLog).toHaveBeenCalledTimes(1)
+    expect(mocks.createLog).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ subscriberId: 'sub-2' }),
+    }))
+    expect(log.warn).toHaveBeenCalled()
+  })
+
+  it('logs error when notificationLog.create rejects after email sent (duplicate risk)', async () => {
+    const { prisma, log, sendEmail } = makeShippedDeps({
+      createLog: jest.fn().mockRejectedValue(new Error('DB deadlock')),
+    })
+    await processFeatureShippedJob(makeShippedJob(), { prisma, log, sendEmail })
+    expect(log.error).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error) }),
+      expect.stringContaining('duplicate risk'),
+    )
+  })
+
+  it('builds roadmap URL using FRONTEND_URL and project slug', async () => {
+    const { prisma, log, sendEmail, mocks } = makeShippedDeps({
+      findFirst: jest.fn().mockResolvedValue({
+        title: 'Dark mode',
+        project: { slug: 'my-project' },
+      }),
+    })
+    await processFeatureShippedJob(makeShippedJob(), { prisma, log, sendEmail })
+    expect(mocks.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ roadmapUrl: expect.stringContaining('/p/my-project/roadmap') }),
+    )
+  })
+
+  it('logs batch summary with correct counts', async () => {
+    const { prisma, log, sendEmail } = makeShippedDeps({
+      findMany: jest.fn().mockResolvedValue([
+        { id: 'sub-1', email: 'a@example.com' },
+        { id: 'sub-2', email: 'b@example.com' },
+      ]),
+      sendEmail: jest.fn()
+        .mockResolvedValueOnce({ ok: true })
+        .mockResolvedValueOnce({ ok: false, error: 'Failed' }),
+    })
+    await processFeatureShippedJob(makeShippedJob(), { prisma, log, sendEmail })
+    expect(log.info).toHaveBeenCalledWith(
+      expect.objectContaining({ total: 2, sent: 1 }),
+      expect.stringContaining('batch complete'),
+    )
   })
 })

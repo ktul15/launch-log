@@ -7,6 +7,12 @@ export type SendChangelogEmailOptions = {
   changelogUrl: string
 }
 
+export type SendFeatureShippedEmailOptions = {
+  to: string
+  itemTitle: string
+  roadmapUrl: string
+}
+
 export type SendResult = { ok: true } | { ok: false; error: string }
 
 // Cached per process — undefined means not yet resolved, null means no API key
@@ -31,7 +37,7 @@ export async function sendChangelogEmail(opts: SendChangelogEmailOptions): Promi
     await client.emails.send({
       from: env.RESEND_FROM_EMAIL,
       to: opts.to,
-      subject: `New update: ${opts.entryTitle}`,
+      subject: `New update: ${stripNewlines(opts.entryTitle)}`,
       html: buildHtml(opts),
       text: buildText(opts),
     })
@@ -39,6 +45,11 @@ export async function sendChangelogEmail(opts: SendChangelogEmailOptions): Promi
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
+}
+
+// Strips CR/LF from user-controlled strings used in email subject headers to prevent header injection.
+function stripNewlines(s: string): string {
+  return s.replace(/[\r\n]/g, '')
 }
 
 // Escapes characters that are special in HTML to prevent XSS in email bodies.
@@ -65,4 +76,37 @@ function buildHtml(opts: SendChangelogEmailOptions): string {
 
 function buildText(opts: SendChangelogEmailOptions): string {
   return `New changelog entry: ${opts.entryTitle}\n\nView it here: ${opts.changelogUrl}`
+}
+
+export async function sendFeatureShippedEmail(opts: SendFeatureShippedEmailOptions): Promise<SendResult> {
+  const client = getResendClient()
+  if (!client) {
+    return { ok: false, error: 'Resend not configured — RESEND_API_KEY missing' }
+  }
+  try {
+    await client.emails.send({
+      from: env.RESEND_FROM_EMAIL,
+      to: opts.to,
+      subject: `Shipped: ${stripNewlines(opts.itemTitle)}`,
+      html: buildFeatureShippedHtml(opts),
+      text: buildFeatureShippedText(opts),
+    })
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+function buildFeatureShippedHtml(opts: SendFeatureShippedEmailOptions): string {
+  const safeTitle = escHtml(opts.itemTitle)
+  const safeUrl = escHtml(opts.roadmapUrl)
+  return [
+    '<p>A roadmap item has shipped:</p>',
+    `<p><strong>${safeTitle}</strong></p>`,
+    `<p><a href="${safeUrl}">View the roadmap</a></p>`,
+  ].join('\n')
+}
+
+function buildFeatureShippedText(opts: SendFeatureShippedEmailOptions): string {
+  return `Roadmap item shipped: ${opts.itemTitle}\n\nView it here: ${opts.roadmapUrl}`
 }
