@@ -8,6 +8,9 @@ const PUBLIC_RATE_LIMIT = env.NODE_ENV === 'test' ? 100_000 : 5
 // Verify-vote is a click-from-email flow — more generous limit than submit/vote
 // to avoid blocking users behind shared NAT from verifying their own vote.
 const VERIFY_VOTE_RATE_LIMIT = env.NODE_ENV === 'test' ? 100_000 : 30
+// Per-email rate limit on the upvote endpoint. Complements IP-based limiting: an attacker
+// rotating IPs can't bypass this to probe whether a given email has already voted (verified).
+const EMAIL_VOTE_RATE_LIMIT = env.NODE_ENV === 'test' ? 100_000 : 3
 const FORTY_EIGHT_HOURS_MS = 48 * 60 * 60 * 1000
 
 const FEATURE_SELECT_PUBLIC = {
@@ -187,6 +190,34 @@ export default async function publicRoutes(fastify: FastifyInstance) {
         return reply.status(404).send({ message: 'Feature not found' })
       }
 
+      // Per-email rate limit — prevents IP-rotation attacks from probing vote/verified status
+      // via the differentiated 409 messages. Fail open if Redis is unavailable.
+      const emailHash = crypto.createHmac('sha256', env.JWT_SECRET).update(email).digest('hex')
+      const emailRlKey = `rl:vote:email:${emailHash}`
+      try {
+        const attempts = await fastify.redis.incr(emailRlKey)
+        if (attempts === 1) {
+          await fastify.redis.expire(emailRlKey, 3600)
+        }
+        if (attempts > EMAIL_VOTE_RATE_LIMIT) {
+          return reply.status(429).send({ statusCode: 429, error: 'Too Many Requests', message: 'Rate limit exceeded. Retry after 1h' })
+        }
+      } catch (err) {
+        req.log.warn({ err }, 'vote: email rate-limit Redis check failed — skipping check')
+      }
+
+      const existingVote = await fastify.prisma.vote.findUnique({
+        where: { featureRequestId_voterEmail: { featureRequestId: feature.id, voterEmail: email } },
+        select: { verified: true },
+      })
+
+      if (existingVote) {
+        const message = existingVote.verified
+          ? 'You have already voted for this feature.'
+          : 'A verification email has already been sent. Please check your inbox.'
+        return reply.status(409).send({ statusCode: 409, error: 'Conflict', message })
+      }
+
       const verificationToken = crypto.randomUUID()
       const ipHash = hashIp(req.ip)
 
@@ -205,8 +236,17 @@ export default async function publicRoutes(fastify: FastifyInstance) {
         })
         voteId = vote.id
       } catch (err) {
+        // Safety net for the race window between the pre-check and the insert.
+        // Re-query to return the same context-aware message as the pre-check path.
         if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-          return reply.status(409).send({ statusCode: 409, error: 'Conflict', message: 'Already voted' })
+          const raceVote = await fastify.prisma.vote.findUnique({
+            where: { featureRequestId_voterEmail: { featureRequestId: feature.id, voterEmail: email } },
+            select: { verified: true },
+          })
+          const message = raceVote?.verified
+            ? 'You have already voted for this feature.'
+            : 'A verification email has already been sent. Please check your inbox.'
+          return reply.status(409).send({ statusCode: 409, error: 'Conflict', message })
         }
         throw err
       }
@@ -252,6 +292,7 @@ export default async function publicRoutes(fastify: FastifyInstance) {
       if (Date.now() - vote.createdAt.getTime() > FORTY_EIGHT_HOURS_MS) {
         // Delete the unverified vote so the user can cast a new vote
         await fastify.prisma.vote.deleteMany({ where: { id: vote.id, verified: false } })
+        req.log.info({ voteId: vote.id }, 'vote: verification token expired — vote deleted, user can re-vote')
         return reply.status(400).send({ message: 'Invalid or expired token' })
       }
 

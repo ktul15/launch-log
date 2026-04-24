@@ -450,17 +450,18 @@ describe('POST /api/v1/public/:projectKey/features/:featureId/vote', () => {
     )
   })
 
-  it('returns 409 when same email votes twice on same feature', async () => {
-    const { cookie } = await registerAndGetCookie(app, 'vote-dup')
-    const { widgetKey } = await createProjectAndGetKey(app, cookie, 'vote-dup')
-    const featureId = await submitFeature(app, widgetKey, 'Dup vote feature', 'vd-submitter')
-    const voterEmail = testEmail('vote-dup-voter')
+  it('returns 409 with check-inbox message when vote is pending verification', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'vote-dup-unver')
+    const { widgetKey } = await createProjectAndGetKey(app, cookie, 'vote-dup-unver')
+    const featureId = await submitFeature(app, widgetKey, 'Dup vote feature unver', 'vdu-submitter')
+    const voterEmail = testEmail('vote-dup-unver-voter')
 
     await app.inject({
       method: 'POST',
       url: `/api/v1/public/${widgetKey}/features/${featureId}/vote`,
       payload: { email: voterEmail },
     })
+    ;(app.notificationQueue.add as jest.Mock).mockClear()
 
     const res = await app.inject({
       method: 'POST',
@@ -469,7 +470,41 @@ describe('POST /api/v1/public/:projectKey/features/:featureId/vote', () => {
     })
 
     expect(res.statusCode).toBe(409)
-    expect(JSON.parse(res.body)).toMatchObject({ statusCode: 409, error: 'Conflict', message: 'Already voted' })
+    expect(JSON.parse(res.body)).toMatchObject({
+      statusCode: 409,
+      error: 'Conflict',
+      message: 'A verification email has already been sent. Please check your inbox.',
+    })
+  })
+
+  it('returns 409 with already-voted message when vote is verified', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'vote-dup-ver')
+    const { widgetKey } = await createProjectAndGetKey(app, cookie, 'vote-dup-ver')
+    const featureId = await submitFeature(app, widgetKey, 'Dup vote feature ver', 'vdv-submitter')
+    const voterEmail = testEmail('vote-dup-ver-voter')
+
+    await app.inject({
+      method: 'POST',
+      url: `/api/v1/public/${widgetKey}/features/${featureId}/vote`,
+      payload: { email: voterEmail },
+    })
+    ;(app.notificationQueue.add as jest.Mock).mockClear()
+
+    const vote = await prisma.vote.findFirst({ where: { featureRequestId: featureId, voterEmail } })
+    await prisma.vote.update({ where: { id: vote!.id }, data: { verified: true } })
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/public/${widgetKey}/features/${featureId}/vote`,
+      payload: { email: voterEmail },
+    })
+
+    expect(res.statusCode).toBe(409)
+    expect(JSON.parse(res.body)).toMatchObject({
+      statusCode: 409,
+      error: 'Conflict',
+      message: 'You have already voted for this feature.',
+    })
   })
 
   it('allows same email to vote on different features', async () => {
@@ -748,6 +783,38 @@ describe('GET /api/v1/public/verify-vote', () => {
     // Vote row should be deleted so the user can cast a new vote
     const vote = await prisma.vote.findFirst({ where: { featureRequestId: featureId, voterEmail } })
     expect(vote).toBeNull()
+  })
+
+  it('allows re-vote after expiry — new vote row created and verification email sent', async () => {
+    const { widgetKey, featureId, voteToken, voterEmail } = await createVotedFeature(app, 'verify-revote')
+
+    // Expire the vote
+    await prisma.vote.updateMany({
+      where: { verificationToken: voteToken },
+      data: { createdAt: new Date(Date.now() - 49 * 60 * 60 * 1000) },
+    })
+
+    // Trigger expiry — verify-vote deletes the unverified vote
+    await app.inject({
+      method: 'GET',
+      url: '/api/v1/public/verify-vote',
+      query: { token: voteToken },
+    })
+
+    // Re-vote should succeed — old row deleted, new unverified vote created
+    const reVoteRes = await app.inject({
+      method: 'POST',
+      url: `/api/v1/public/${widgetKey}/features/${featureId}/vote`,
+      payload: { email: voterEmail },
+    })
+
+    expect(reVoteRes.statusCode).toBe(200)
+    expect(JSON.parse(reVoteRes.body)).toEqual({ message: 'Verification email sent' })
+
+    const newVote = await prisma.vote.findFirst({ where: { featureRequestId: featureId, voterEmail } })
+    expect(newVote).not.toBeNull()
+    expect(newVote!.verified).toBe(false)
+    expect(newVote!.verificationToken).not.toBe(voteToken)
   })
 
   it('vote.verified and voteCount are always consistent (transaction atomicity)', async () => {
