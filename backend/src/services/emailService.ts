@@ -148,5 +148,5 @@ function buildVoteVerificationHtml(opts: SendVoteVerificationEmailOptions): stri
 }
 
 function buildVoteVerificationText(opts: SendVoteVerificationEmailOptions): string {
-  return `You requested to vote for: ${stripNewlines(opts.featureTitle)}\n\nVerify your vote here: ${opts.verifyUrl}\n\nIf you did not submit this vote, you can ignore this email.`
+  return `You requested to vote for: ${stripNewlines(opts.featureTitle)}\n\nVerify your vote here: ${stripNewlines(opts.verifyUrl)}\n\nIf you did not submit this vote, you can ignore this email.`
 }

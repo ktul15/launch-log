@@ -239,6 +239,17 @@ export async function processVoteVerificationJob(
     return
   }
 
+  // Dedup: skip if this job already sent a verification email (e.g. on a BullMQ retry after
+  // the email was delivered but the job completion acknowledgment was lost).
+  const existingLog = await prisma.notificationLog.findFirst({
+    where: { type: 'vote_verification', referenceId: voteId },
+    select: { id: true },
+  })
+  if (existingLog) {
+    log.info({ voteId }, 'notification worker: vote verification email already sent, skipping')
+    return
+  }
+
   const verifyUrlObj = new URL('/verify/vote', env.FRONTEND_URL)
   verifyUrlObj.searchParams.set('token', vote.verificationToken)
   const verifyUrl = verifyUrlObj.toString()
@@ -252,6 +263,16 @@ export async function processVoteVerificationJob(
   if (!result.ok) {
     // Throw so BullMQ retries — a transient email failure should not silently drop the verification
     throw new Error(`vote verification email failed: ${result.error}`)
+  }
+
+  // Write log row after send. If this fails, the email was sent but the dedup record is
+  // missing — the voter may receive a duplicate on retry. Log as error so it's visible in alerting.
+  try {
+    await prisma.notificationLog.create({
+      data: { type: 'vote_verification', referenceId: voteId },
+    })
+  } catch (err) {
+    log.error({ voteId, err }, 'notification worker: failed to create notificationLog after vote verification email sent — duplicate risk on retry')
   }
 }
 

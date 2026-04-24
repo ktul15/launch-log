@@ -602,9 +602,9 @@ describe('POST /api/v1/public/:projectKey/features/:featureId/vote', () => {
   })
 })
 
-// ─── POST /api/v1/public/verify-vote ─────────────────────────────────────────
+// ─── GET /api/v1/public/verify-vote ──────────────────────────────────────────
 
-describe('POST /api/v1/public/verify-vote', () => {
+describe('GET /api/v1/public/verify-vote', () => {
   async function createVotedFeature(
     app: FastifyInstance,
     label: string,
@@ -635,9 +635,9 @@ describe('POST /api/v1/public/verify-vote', () => {
     const { featureId, voteToken } = await createVotedFeature(app, 'verify-happy')
 
     const res = await app.inject({
-      method: 'POST',
+      method: 'GET',
       url: '/api/v1/public/verify-vote',
-      payload: { token: voteToken },
+      query: { token: voteToken },
     })
 
     expect(res.statusCode).toBe(200)
@@ -654,15 +654,15 @@ describe('POST /api/v1/public/verify-vote', () => {
     const { featureId, voteToken } = await createVotedFeature(app, 'verify-idempotent')
 
     await app.inject({
-      method: 'POST',
+      method: 'GET',
       url: '/api/v1/public/verify-vote',
-      payload: { token: voteToken },
+      query: { token: voteToken },
     })
 
     const res2 = await app.inject({
-      method: 'POST',
+      method: 'GET',
       url: '/api/v1/public/verify-vote',
-      payload: { token: voteToken },
+      query: { token: voteToken },
     })
 
     expect(res2.statusCode).toBe(200)
@@ -674,9 +674,9 @@ describe('POST /api/v1/public/verify-vote', () => {
 
   it('returns 400 for unknown token', async () => {
     const res = await app.inject({
-      method: 'POST',
+      method: 'GET',
       url: '/api/v1/public/verify-vote',
-      payload: { token: crypto.randomUUID() },
+      query: { token: crypto.randomUUID() },
     })
 
     expect(res.statusCode).toBe(400)
@@ -685,9 +685,9 @@ describe('POST /api/v1/public/verify-vote', () => {
 
   it('returns 400 when token is missing', async () => {
     const res = await app.inject({
-      method: 'POST',
+      method: 'GET',
       url: '/api/v1/public/verify-vote',
-      payload: {},
+      query: {},
     })
 
     expect(res.statusCode).toBe(400)
@@ -695,9 +695,9 @@ describe('POST /api/v1/public/verify-vote', () => {
 
   it('returns 400 when token is empty string', async () => {
     const res = await app.inject({
-      method: 'POST',
+      method: 'GET',
       url: '/api/v1/public/verify-vote',
-      payload: { token: '' },
+      query: { token: '' },
     })
 
     expect(res.statusCode).toBe(400)
@@ -705,12 +705,67 @@ describe('POST /api/v1/public/verify-vote', () => {
 
   it('returns 400 when token exceeds max length', async () => {
     const res = await app.inject({
-      method: 'POST',
+      method: 'GET',
       url: '/api/v1/public/verify-vote',
-      payload: { token: 'a'.repeat(129) },
+      query: { token: 'a'.repeat(129) },
     })
 
     expect(res.statusCode).toBe(400)
+  })
+
+  it('returns 400 for expired token (older than 48h)', async () => {
+    const { voteToken } = await createVotedFeature(app, 'verify-expired')
+
+    await prisma.vote.updateMany({
+      where: { verificationToken: voteToken },
+      data: { createdAt: new Date(Date.now() - 49 * 60 * 60 * 1000) },
+    })
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/public/verify-vote',
+      query: { token: voteToken },
+    })
+
+    expect(res.statusCode).toBe(400)
+    expect(JSON.parse(res.body).message).toBe('Invalid or expired token')
+  })
+
+  it('deletes the unverified vote on expiry so the user can re-vote', async () => {
+    const { featureId, voteToken, voterEmail } = await createVotedFeature(app, 'verify-expiry-cleanup')
+
+    await prisma.vote.updateMany({
+      where: { verificationToken: voteToken },
+      data: { createdAt: new Date(Date.now() - 49 * 60 * 60 * 1000) },
+    })
+
+    await app.inject({
+      method: 'GET',
+      url: '/api/v1/public/verify-vote',
+      query: { token: voteToken },
+    })
+
+    // Vote row should be deleted so the user can cast a new vote
+    const vote = await prisma.vote.findFirst({ where: { featureRequestId: featureId, voterEmail } })
+    expect(vote).toBeNull()
+  })
+
+  it('vote.verified and voteCount are always consistent (transaction atomicity)', async () => {
+    const { featureId, voteToken } = await createVotedFeature(app, 'verify-atomic')
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/public/verify-vote',
+      query: { token: voteToken },
+    })
+    expect(res.statusCode).toBe(200)
+
+    const vote = await prisma.vote.findFirst({ where: { verificationToken: voteToken } })
+    const feature = await prisma.featureRequest.findUnique({ where: { id: featureId } })
+
+    // Both must be updated together — if transaction rolled back, both would be unchanged
+    expect(vote!.verified).toBe(true)
+    expect(feature!.voteCount).toBe(1)
   })
 })
 
@@ -734,9 +789,9 @@ describe('voteCount lifecycle', () => {
 
     const vote = await prisma.vote.findFirst({ where: { featureRequestId: featureId } })
     const verifyRes = await app.inject({
-      method: 'POST',
+      method: 'GET',
       url: '/api/v1/public/verify-vote',
-      payload: { token: vote!.verificationToken },
+      query: { token: vote!.verificationToken },
     })
     expect(verifyRes.statusCode).toBe(200)
 
