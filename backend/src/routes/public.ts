@@ -5,6 +5,10 @@ import { Prisma } from '@prisma/client'
 import { env } from '../config/env'
 
 const PUBLIC_RATE_LIMIT = env.NODE_ENV === 'test' ? 100_000 : 5
+// Higher limit than submit/vote — SSR server is a single shared IP for all page renders.
+// With 60s revalidation on the frontend, real backend call rate is ~1/min/project.
+const PAGE_RATE_LIMIT = env.NODE_ENV === 'test' ? 100_000 : 120
+const PAGE_LIST_LIMIT = 50
 // Verify-vote is a click-from-email flow — more generous limit than submit/vote
 // to avoid blocking users behind shared NAT from verifying their own vote.
 const VERIFY_VOTE_RATE_LIMIT = env.NODE_ENV === 'test' ? 100_000 : 30
@@ -325,6 +329,132 @@ export default async function publicRoutes(fastify: FastifyInstance) {
       }
 
       return reply.status(200).send({ message: 'Vote verified' })
+    },
+  )
+
+  // GET /resolve/:orgSlug/:projectSlug — slug-based resolution for SSR public pages.
+  // Single DB query via relation filter — no id exposed in response.
+  fastify.get(
+    '/resolve/:orgSlug/:projectSlug',
+    {
+      config: { rateLimit: { max: PAGE_RATE_LIMIT, timeWindow: 3_600_000 } },
+    },
+    async (req, reply) => {
+      const { orgSlug, projectSlug } = req.params as { orgSlug: string; projectSlug: string }
+
+      if (orgSlug.length > 100 || projectSlug.length > 100) {
+        return reply.status(404).send({ message: 'Project not found' })
+      }
+
+      const project = await fastify.prisma.project.findFirst({
+        where: { slug: projectSlug, isActive: true, org: { slug: orgSlug } },
+        select: {
+          name: true,
+          slug: true,
+          description: true,
+          widgetKey: true,
+          org: { select: { name: true } },
+        },
+      })
+      if (!project) return reply.status(404).send({ message: 'Project not found' })
+
+      return reply.send({
+        name: project.name,
+        slug: project.slug,
+        description: project.description,
+        widgetKey: project.widgetKey,
+        orgName: project.org.name,
+      })
+    },
+  )
+
+  // GET /:projectKey/changelog — published entries for public page
+  fastify.get(
+    '/:projectKey/changelog',
+    {
+      config: { rateLimit: { max: PAGE_RATE_LIMIT, timeWindow: 3_600_000 } },
+    },
+    async (req, reply) => {
+      const { projectKey } = req.params as { projectKey: string }
+
+      if (projectKey.length > PROJECT_KEY_MAX_LEN) {
+        return reply.status(404).send({ message: 'Project not found' })
+      }
+
+      const project = await fastify.prisma.project.findUnique({
+        where: { widgetKey: projectKey, isActive: true },
+        select: { id: true },
+      })
+      if (!project) return reply.status(404).send({ message: 'Project not found' })
+
+      const entries = await fastify.prisma.changelogEntry.findMany({
+        where: { projectId: project.id, status: 'published' },
+        orderBy: { publishedAt: 'desc' },
+        take: PAGE_LIST_LIMIT,
+        select: { id: true, title: true, version: true, status: true, publishedAt: true, categoryId: true },
+      })
+
+      return reply.send(entries)
+    },
+  )
+
+  // GET /:projectKey/roadmap — all roadmap items for public page
+  fastify.get(
+    '/:projectKey/roadmap',
+    {
+      config: { rateLimit: { max: PAGE_RATE_LIMIT, timeWindow: 3_600_000 } },
+    },
+    async (req, reply) => {
+      const { projectKey } = req.params as { projectKey: string }
+
+      if (projectKey.length > PROJECT_KEY_MAX_LEN) {
+        return reply.status(404).send({ message: 'Project not found' })
+      }
+
+      const project = await fastify.prisma.project.findUnique({
+        where: { widgetKey: projectKey, isActive: true },
+        select: { id: true },
+      })
+      if (!project) return reply.status(404).send({ message: 'Project not found' })
+
+      const items = await fastify.prisma.roadmapItem.findMany({
+        where: { projectId: project.id },
+        orderBy: [{ status: 'asc' }, { displayOrder: 'asc' }],
+        take: PAGE_LIST_LIMIT,
+        select: { id: true, title: true, description: true, status: true, displayOrder: true },
+      })
+
+      return reply.send(items)
+    },
+  )
+
+  // GET /:projectKey/features — open/active feature requests for public page
+  fastify.get(
+    '/:projectKey/features',
+    {
+      config: { rateLimit: { max: PAGE_RATE_LIMIT, timeWindow: 3_600_000 } },
+    },
+    async (req, reply) => {
+      const { projectKey } = req.params as { projectKey: string }
+
+      if (projectKey.length > PROJECT_KEY_MAX_LEN) {
+        return reply.status(404).send({ message: 'Project not found' })
+      }
+
+      const project = await fastify.prisma.project.findUnique({
+        where: { widgetKey: projectKey, isActive: true },
+        select: { id: true },
+      })
+      if (!project) return reply.status(404).send({ message: 'Project not found' })
+
+      const features = await fastify.prisma.featureRequest.findMany({
+        where: { projectId: project.id, status: { notIn: ['closed', 'shipped'] } },
+        orderBy: { voteCount: 'desc' },
+        take: PAGE_LIST_LIMIT,
+        select: FEATURE_SELECT_PUBLIC,
+      })
+
+      return reply.send(features)
     },
   )
 }
