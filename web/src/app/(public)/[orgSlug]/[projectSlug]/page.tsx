@@ -140,6 +140,7 @@ export default async function PublicProjectPage({ params, searchParams }: Props)
         roadmap={roadmap}
         features={features}
         activeTab={activeTab}
+        projectKey={project.widgetKey}
       />
     </div>
   )

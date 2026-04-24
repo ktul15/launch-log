@@ -1,4 +1,10 @@
+'use client'
+
+import { useState } from 'react'
 import Link from 'next/link'
+import RichTextViewer from '@/components/RichTextViewer'
+import { apiFetch } from '@/lib/api'
+import type { TipTapDoc } from '@/types/changelog'
 import type { PublicChangelogEntry, PublicFeature, PublicRoadmapItem } from '@/types/public'
 
 export type Tab = 'changelog' | 'roadmap' | 'features'
@@ -36,18 +42,44 @@ interface Props {
   roadmap: PublicRoadmapItem[]
   features: PublicFeature[]
   activeTab: Tab
+  projectKey: string
 }
 
-export default function PublicPageClient({ changelog, roadmap, features, activeTab }: Props) {
+export default function PublicPageClient({ changelog, roadmap, features, activeTab, projectKey }: Props) {
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [contentCache, setContentCache] = useState<Record<string, TipTapDoc>>({})
+  const [loadingId, setLoadingId] = useState<string | null>(null)
+
+  async function handleExpand(entryId: string) {
+    if (expandedId === entryId) {
+      setExpandedId(null)
+      return
+    }
+    setExpandedId(entryId)
+    if (contentCache[entryId]) return
+    setLoadingId(entryId)
+    try {
+      const res = await apiFetch(`/api/v1/public/${projectKey}/changelog/${entryId}`)
+      if (res.ok) {
+        const data = await res.json()
+        if (data.content) {
+          setContentCache((c) => ({ ...c, [entryId]: data.content }))
+        }
+      }
+    } catch {
+      // content unavailable — collapsed state will show nothing
+    } finally {
+      setLoadingId(null)
+    }
+  }
+
   return (
     <div className="mx-auto max-w-3xl px-4 py-8">
-      <nav role="tablist" aria-label="Project sections" className="mb-8 flex gap-1 border-b border-gray-200">
+      <nav aria-label="Project sections" className="mb-8 flex gap-1 border-b border-gray-200">
         {TABS.map((t) => (
           <Link
             key={t}
             href={`?tab=${t}`}
-            role="tab"
-            aria-selected={activeTab === t}
             aria-current={activeTab === t ? 'page' : undefined}
             className={`px-4 py-2 text-sm font-medium transition-colors ${
               activeTab === t
@@ -67,20 +99,41 @@ export default function PublicPageClient({ changelog, roadmap, features, activeT
           )}
           {changelog.map((entry) => (
             <div key={entry.id} className="border-b border-gray-100 pb-6">
-              <div className="mb-1 flex items-center gap-2">
-                {entry.version && (
-                  <span className="rounded bg-gray-100 px-2 py-0.5 text-xs font-mono text-gray-600">
-                    {entry.version}
+              <button
+                className="w-full text-left"
+                onClick={() => handleExpand(entry.id)}
+                aria-expanded={expandedId === entry.id}
+                aria-controls={`changelog-content-${entry.id}`}
+              >
+                <div className="mb-1 flex items-center gap-2">
+                  {entry.version && (
+                    <span className="rounded bg-gray-100 px-2 py-0.5 text-xs font-mono text-gray-600">
+                      {entry.version}
+                    </span>
+                  )}
+                  {entry.publishedAt && (() => {
+                    const formatted = formatDate(entry.publishedAt)
+                    return formatted ? (
+                      <span className="text-xs text-gray-400">{formatted}</span>
+                    ) : null
+                  })()}
+                  <span className="ml-auto text-xs text-gray-400">
+                    {expandedId === entry.id ? '▾' : '▸'}
                   </span>
+                </div>
+                <h3 className="text-base font-semibold text-gray-900">{entry.title}</h3>
+              </button>
+              <div id={`changelog-content-${entry.id}`}>
+                {expandedId === entry.id && (
+                  <div className="mt-4">
+                    {loadingId === entry.id ? (
+                      <div className="min-h-[40px] animate-pulse rounded bg-gray-50" />
+                    ) : contentCache[entry.id] ? (
+                      <RichTextViewer content={contentCache[entry.id]} />
+                    ) : null}
+                  </div>
                 )}
-                {entry.publishedAt && (() => {
-                  const formatted = formatDate(entry.publishedAt)
-                  return formatted ? (
-                    <span className="text-xs text-gray-400">{formatted}</span>
-                  ) : null
-                })()}
               </div>
-              <h3 className="text-base font-semibold text-gray-900">{entry.title}</h3>
             </div>
           ))}
         </div>
