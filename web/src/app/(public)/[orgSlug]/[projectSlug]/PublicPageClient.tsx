@@ -23,11 +23,34 @@ const STATUS_LABELS: Record<string, string> = {
   closed: 'Closed',
 }
 
-const ROADMAP_COLUMNS: { status: PublicRoadmapItem['status']; label: string }[] = [
-  { status: 'planned', label: STATUS_LABELS.planned },
-  { status: 'in_progress', label: STATUS_LABELS.in_progress },
-  { status: 'shipped', label: STATUS_LABELS.shipped },
+// Single source of truth for roadmap column config — status, label, and visual styles co-located.
+const ROADMAP_COLUMNS: {
+  status: PublicRoadmapItem['status']
+  label: string
+  headerStyle: string
+  cardBorder: string
+}[] = [
+  {
+    status: 'planned',
+    label: 'Planned',
+    headerStyle: 'bg-blue-50 border border-blue-200 text-blue-800',
+    cardBorder: 'border-l-blue-400',
+  },
+  {
+    status: 'in_progress',
+    label: 'In Progress',
+    headerStyle: 'bg-amber-50 border border-amber-200 text-amber-800',
+    cardBorder: 'border-l-amber-400',
+  },
+  {
+    status: 'shipped',
+    label: 'Shipped',
+    headerStyle: 'bg-green-50 border border-green-200 text-green-800',
+    cardBorder: 'border-l-green-400',
+  },
 ]
+
+const KNOWN_ROADMAP_STATUSES = new Set(ROADMAP_COLUMNS.map((c) => c.status))
 
 const TABS: Tab[] = ['changelog', 'roadmap', 'features']
 
@@ -49,6 +72,10 @@ export default function PublicPageClient({ changelog, roadmap, features, activeT
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [contentCache, setContentCache] = useState<Record<string, TipTapDoc>>({})
   const [loadingId, setLoadingId] = useState<string | null>(null)
+  const [errorId, setErrorId] = useState<string | null>(null)
+
+  // Only render items whose status matches a known column — guards against future backend enum additions.
+  const knownRoadmapItems = roadmap.filter((i) => KNOWN_ROADMAP_STATUSES.has(i.status))
 
   async function handleExpand(entryId: string) {
     if (expandedId === entryId) {
@@ -56,6 +83,7 @@ export default function PublicPageClient({ changelog, roadmap, features, activeT
       return
     }
     setExpandedId(entryId)
+    setErrorId(null)
     if (contentCache[entryId]) return
     setLoadingId(entryId)
     try {
@@ -65,9 +93,11 @@ export default function PublicPageClient({ changelog, roadmap, features, activeT
         if (data.content) {
           setContentCache((c) => ({ ...c, [entryId]: data.content }))
         }
+      } else {
+        setErrorId(entryId)
       }
     } catch {
-      // content unavailable — collapsed state will show nothing
+      setErrorId(entryId)
     } finally {
       setLoadingId(null)
     }
@@ -104,6 +134,7 @@ export default function PublicPageClient({ changelog, roadmap, features, activeT
                 onClick={() => handleExpand(entry.id)}
                 aria-expanded={expandedId === entry.id}
                 aria-controls={`changelog-content-${entry.id}`}
+                aria-label={entry.title}
               >
                 <div className="mb-1 flex items-center gap-2">
                   {entry.version && (
@@ -117,7 +148,7 @@ export default function PublicPageClient({ changelog, roadmap, features, activeT
                       <span className="text-xs text-gray-400">{formatted}</span>
                     ) : null
                   })()}
-                  <span className="ml-auto text-xs text-gray-400">
+                  <span className="ml-auto text-xs text-gray-400" aria-hidden="true">
                     {expandedId === entry.id ? '▾' : '▸'}
                   </span>
                 </div>
@@ -128,6 +159,8 @@ export default function PublicPageClient({ changelog, roadmap, features, activeT
                   <div className="mt-4">
                     {loadingId === entry.id ? (
                       <div className="min-h-[40px] animate-pulse rounded bg-gray-50" />
+                    ) : errorId === entry.id ? (
+                      <p className="text-xs text-red-500">Failed to load content. Try again.</p>
                     ) : contentCache[entry.id] ? (
                       <RichTextViewer content={contentCache[entry.id]} />
                     ) : null}
@@ -141,19 +174,25 @@ export default function PublicPageClient({ changelog, roadmap, features, activeT
 
       {activeTab === 'roadmap' && (
         <div className="grid grid-cols-1 gap-6 sm:grid-cols-3">
-          {ROADMAP_COLUMNS.map(({ status, label }) => {
-            const items = roadmap.filter((i) => i.status === status)
+          {ROADMAP_COLUMNS.map(({ status, label, headerStyle, cardBorder }) => {
+            const items = knownRoadmapItems.filter((i) => i.status === status)
             return (
-              <div key={status}>
-                <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-500">
-                  {label}
-                </h3>
-                {items.length === 0 && (
-                  <p className="text-xs text-gray-400">Nothing here yet.</p>
-                )}
+              <section key={status} aria-label={label}>
+                <div className={`mb-3 flex items-center justify-between rounded-md px-3 py-1.5 ${headerStyle}`}>
+                  <h3 className="text-xs font-semibold uppercase tracking-wide">{label}</h3>
+                  <span
+                    className="rounded-full bg-white/60 px-1.5 py-0.5 text-xs font-medium"
+                    aria-label={`${items.length} items`}
+                  >
+                    {items.length}
+                  </span>
+                </div>
                 <div className="space-y-2">
+                  {items.length === 0 && (
+                    <p className="py-2 text-center text-xs text-gray-400">Nothing here yet.</p>
+                  )}
                   {items.map((item) => (
-                    <div key={item.id} className="rounded-lg border border-gray-200 p-3">
+                    <div key={item.id} className={`rounded-lg border border-gray-200 border-l-4 p-3 ${cardBorder}`}>
                       <p className="text-sm font-medium text-gray-900">{item.title}</p>
                       {item.description && (
                         <p className="mt-1 text-xs text-gray-500">{item.description}</p>
@@ -161,7 +200,7 @@ export default function PublicPageClient({ changelog, roadmap, features, activeT
                     </div>
                   ))}
                 </div>
-              </div>
+              </section>
             )
           })}
         </div>
