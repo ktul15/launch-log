@@ -119,7 +119,10 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
 }
 
 export const config = {
-  // Protect all paths except /login, /_next/*, /favicon.ico, and /api/*.
-  // Add public route prefixes here as they are introduced (e.g. /[orgSlug]).
-  matcher: ['/((?!_next/static|_next/image|favicon\\.ico|login(?:/|$)|api/).*)'],
+  // SECURITY: Allowlist of path prefixes that require JWT auth.
+  // Every new admin section MUST be added here — unlisted paths are unprotected.
+  // Current protected prefixes: dashboard, onboarding, billing, account, team.
+  // Word-boundary: require / or end-of-string after the prefix to prevent
+  // /dashboardx or /onboarding-marketing from accidentally matching.
+  matcher: ['/(dashboard|onboarding|billing|account|team)(/.*)?$'],
 }

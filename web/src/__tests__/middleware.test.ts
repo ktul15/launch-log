@@ -106,19 +106,31 @@ describe('config.matcher', () => {
   it.each([
     ['/dashboard', true],
     ['/dashboard/settings', true],
-    ['/', true],
-    ['/settings', true],
+    ['/dashboard/projects/proj-1/changelog', true],
+    ['/onboarding', true],
+    ['/onboarding/setup', true],
+    ['/billing', true],
+    ['/billing/plans', true],
+    ['/account', true],
+    ['/team', true],
+    ['/team/members', true],
   ])('matches protected path "%s"', (path, expected) => {
     expect(re.test(path)).toBe(expected)
   })
 
   it.each([
+    ['/', false],
     ['/login', false],
     ['/login/', false],
     ['/_next/static/chunk.js', false],
     ['/_next/image', false],
     ['/favicon.ico', false],
     ['/api/webhooks/stripe', false],
+    ['/verify/vote', false],
+    ['/acme-org/my-project', false],
+    // word-boundary guards — prefixes without a trailing slash must not match
+    ['/dashboardx', false],
+    ['/onboarding-marketing', false],
   ])('does not match public/internal path "%s"', (path, expected) => {
     expect(re.test(path)).toBe(expected)
   })
