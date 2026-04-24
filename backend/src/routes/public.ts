@@ -5,6 +5,10 @@ import { Prisma } from '@prisma/client'
 import { env } from '../config/env'
 
 const PUBLIC_RATE_LIMIT = env.NODE_ENV === 'test' ? 100_000 : 5
+// Verify-vote is a click-from-email flow — more generous limit than submit/vote
+// to avoid blocking users behind shared NAT from verifying their own vote.
+const VERIFY_VOTE_RATE_LIMIT = env.NODE_ENV === 'test' ? 100_000 : 30
+const FORTY_EIGHT_HOURS_MS = 48 * 60 * 60 * 1000
 
 const FEATURE_SELECT_PUBLIC = {
   id: true,
@@ -221,14 +225,14 @@ export default async function publicRoutes(fastify: FastifyInstance) {
     },
   )
 
-  // POST /verify-vote
-  fastify.post(
+  // GET /verify-vote
+  fastify.get(
     '/verify-vote',
     {
-      config: { rateLimit: { max: PUBLIC_RATE_LIMIT, timeWindow: 3_600_000 } },
+      config: { rateLimit: { max: VERIFY_VOTE_RATE_LIMIT, timeWindow: 3_600_000 } },
     },
     async (req, reply) => {
-      const parsed = verifyVoteSchema.safeParse(req.body)
+      const parsed = verifyVoteSchema.safeParse(req.query)
       if (!parsed.success) {
         const messages = parsed.error.issues.map((i) => i.message).join(', ')
         return reply.status(400).send({ message: messages })
@@ -238,28 +242,46 @@ export default async function publicRoutes(fastify: FastifyInstance) {
 
       const vote = await fastify.prisma.vote.findUnique({
         where: { verificationToken: token },
-        select: { id: true, featureRequestId: true },
+        select: { id: true, featureRequestId: true, createdAt: true },
       })
 
       if (!vote) {
         return reply.status(400).send({ message: 'Invalid or expired token' })
       }
 
-      // Atomic gate: only one concurrent request wins the UPDATE WHERE verified = false.
-      // The losing request sees count = 0 and returns idempotent success.
-      const updated = await fastify.prisma.vote.updateMany({
-        where: { id: vote.id, verified: false },
-        data: { verified: true },
-      })
-
-      if (updated.count === 0) {
-        return reply.status(200).send({ message: 'Already verified' })
+      if (Date.now() - vote.createdAt.getTime() > FORTY_EIGHT_HOURS_MS) {
+        // Delete the unverified vote so the user can cast a new vote
+        await fastify.prisma.vote.deleteMany({ where: { id: vote.id, verified: false } })
+        return reply.status(400).send({ message: 'Invalid or expired token' })
       }
 
-      await fastify.prisma.featureRequest.update({
-        where: { id: vote.featureRequestId },
-        data: { voteCount: { increment: 1 } },
+      const expiryThreshold = new Date(Date.now() - FORTY_EIGHT_HOURS_MS)
+
+      // Transaction: verify the vote AND increment voteCount atomically.
+      // The WHERE clause also includes the expiry threshold to handle the edge case where
+      // the token crosses the 48h boundary between the check above and this update.
+      // Atomic gate: only one concurrent request wins the UPDATE WHERE verified = false.
+      const { alreadyVerified } = await fastify.prisma.$transaction(async (tx) => {
+        const updated = await tx.vote.updateMany({
+          where: { id: vote.id, verified: false, createdAt: { gte: expiryThreshold } },
+          data: { verified: true },
+        })
+
+        if (updated.count === 0) {
+          return { alreadyVerified: true }
+        }
+
+        await tx.featureRequest.update({
+          where: { id: vote.featureRequestId },
+          data: { voteCount: { increment: 1 } },
+        })
+
+        return { alreadyVerified: false }
       })
+
+      if (alreadyVerified) {
+        return reply.status(200).send({ message: 'Already verified' })
+      }
 
       return reply.status(200).send({ message: 'Vote verified' })
     },

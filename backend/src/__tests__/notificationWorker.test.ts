@@ -1,4 +1,4 @@
-import { processChangelogPublishedJob, processFeatureShippedJob, handleWorkerFailedEvent } from '../workers/notificationWorker'
+import { processChangelogPublishedJob, processFeatureShippedJob, processVoteVerificationJob, handleWorkerFailedEvent } from '../workers/notificationWorker'
 import { NotificationJobData } from '../jobs/index'
 import { SendResult } from '../services/emailService'
 
@@ -415,5 +415,139 @@ describe('processFeatureShippedJob', () => {
       expect.objectContaining({ total: 2, sent: 1 }),
       expect.stringContaining('batch complete'),
     )
+  })
+})
+
+type VoteVerifySendFn = (opts: { to: string; featureTitle: string; verifyUrl: string }) => Promise<SendResult>
+
+function makeVoteJob(overrides: Partial<NotificationJobData> = {}): NotificationJobData {
+  return {
+    type: 'vote_verification',
+    referenceId: 'vote-uuid-1',
+    projectId: 'project-uuid-1',
+    ...overrides,
+  }
+}
+
+function makeVoteDeps(overrides: {
+  voteFindFirst?: jest.Mock
+  logFindFirst?: jest.Mock
+  logCreate?: jest.Mock
+  sendEmail?: jest.Mock
+} = {}) {
+  const voteFindFirst = overrides.voteFindFirst ?? jest.fn().mockResolvedValue({
+    verified: false,
+    voterEmail: 'voter@example.com',
+    verificationToken: 'token-abc-123',
+    featureRequest: { title: 'Dark mode' },
+  })
+
+  const logFindFirst = overrides.logFindFirst ?? jest.fn().mockResolvedValue(null)
+  const logCreate = overrides.logCreate ?? jest.fn().mockResolvedValue({})
+
+  const sendEmail: jest.Mock<Promise<SendResult>> =
+    overrides.sendEmail ?? jest.fn().mockResolvedValue({ ok: true })
+
+  const prisma = {
+    vote: { findFirst: voteFindFirst },
+    notificationLog: { findFirst: logFindFirst, create: logCreate },
+  } as unknown as Parameters<typeof processVoteVerificationJob>[1]['prisma']
+
+  const log = {
+    warn: jest.fn(),
+    info: jest.fn(),
+    error: jest.fn(),
+  } as unknown as Parameters<typeof processVoteVerificationJob>[1]['log']
+
+  return { prisma, log, sendEmail: sendEmail as VoteVerifySendFn, mocks: { voteFindFirst, logFindFirst, logCreate, sendEmail } }
+}
+
+describe('processVoteVerificationJob', () => {
+  it('returns early for non-vote_verification type', async () => {
+    const { prisma, log, sendEmail, mocks } = makeVoteDeps()
+    await processVoteVerificationJob(makeVoteJob({ type: 'changelog_published' }), { prisma, log, sendEmail })
+    expect(mocks.voteFindFirst).not.toHaveBeenCalled()
+  })
+
+  it('returns early + warns when vote not found', async () => {
+    const { prisma, log, sendEmail, mocks } = makeVoteDeps({
+      voteFindFirst: jest.fn().mockResolvedValue(null),
+    })
+    await processVoteVerificationJob(makeVoteJob(), { prisma, log, sendEmail })
+    expect(mocks.sendEmail).not.toHaveBeenCalled()
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ voteId: 'vote-uuid-1' }),
+      expect.stringContaining('not found'),
+    )
+  })
+
+  it('returns early + logs info when vote already verified', async () => {
+    const { prisma, log, sendEmail, mocks } = makeVoteDeps({
+      voteFindFirst: jest.fn().mockResolvedValue({
+        verified: true,
+        voterEmail: 'voter@example.com',
+        verificationToken: 'token-abc-123',
+        featureRequest: { title: 'Dark mode' },
+      }),
+    })
+    await processVoteVerificationJob(makeVoteJob(), { prisma, log, sendEmail })
+    expect(mocks.sendEmail).not.toHaveBeenCalled()
+    expect(log.info).toHaveBeenCalledWith(
+      expect.objectContaining({ voteId: 'vote-uuid-1' }),
+      expect.stringContaining('already verified'),
+    )
+  })
+
+  it('skips send when notificationLog entry already exists (dedup on retry)', async () => {
+    const { prisma, log, sendEmail, mocks } = makeVoteDeps({
+      logFindFirst: jest.fn().mockResolvedValue({ id: 'log-uuid-1' }),
+    })
+    await processVoteVerificationJob(makeVoteJob(), { prisma, log, sendEmail })
+    expect(mocks.sendEmail).not.toHaveBeenCalled()
+    expect(log.info).toHaveBeenCalledWith(
+      expect.objectContaining({ voteId: 'vote-uuid-1' }),
+      expect.stringContaining('already sent'),
+    )
+  })
+
+  it('sends email with correct to, featureTitle, and verifyUrl containing base URL', async () => {
+    const { prisma, log, sendEmail, mocks } = makeVoteDeps()
+    await processVoteVerificationJob(makeVoteJob(), { prisma, log, sendEmail })
+    expect(mocks.sendEmail).toHaveBeenCalledTimes(1)
+    const call = mocks.sendEmail.mock.calls[0][0] as { to: string; featureTitle: string; verifyUrl: string }
+    expect(call.to).toBe('voter@example.com')
+    expect(call.featureTitle).toBe('Dark mode')
+    // verifyUrl must be an absolute URL containing the path and token
+    expect(() => new URL(call.verifyUrl)).not.toThrow()
+    expect(call.verifyUrl).toContain('/verify/vote')
+    expect(call.verifyUrl).toContain('token=token-abc-123')
+  })
+
+  it('creates notificationLog row after successful send', async () => {
+    const { prisma, log, sendEmail, mocks } = makeVoteDeps()
+    await processVoteVerificationJob(makeVoteJob(), { prisma, log, sendEmail })
+    expect(mocks.logCreate).toHaveBeenCalledWith({
+      data: { type: 'vote_verification', referenceId: 'vote-uuid-1' },
+    })
+  })
+
+  it('logs error when notificationLog.create fails after email sent (duplicate risk)', async () => {
+    const { prisma, log, sendEmail } = makeVoteDeps({
+      logCreate: jest.fn().mockRejectedValue(new Error('DB deadlock')),
+    })
+    await processVoteVerificationJob(makeVoteJob(), { prisma, log, sendEmail })
+    expect(log.error).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error) }),
+      expect.stringContaining('duplicate risk'),
+    )
+  })
+
+  it('throws when email send fails so BullMQ retries', async () => {
+    const { prisma, log, sendEmail } = makeVoteDeps({
+      sendEmail: jest.fn().mockResolvedValue({ ok: false, error: 'SMTP timeout' }),
+    })
+    await expect(
+      processVoteVerificationJob(makeVoteJob(), { prisma, log, sendEmail }),
+    ).rejects.toThrow('vote verification email failed')
   })
 })
