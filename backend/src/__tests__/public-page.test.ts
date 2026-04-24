@@ -198,6 +198,82 @@ describe('GET /api/v1/public/:projectKey/changelog', () => {
   })
 })
 
+// ─── GET /api/v1/public/:projectKey/changelog/:entryId ───────────────────────
+
+describe('GET /api/v1/public/:projectKey/changelog/:entryId', () => {
+  it('returns full entry with content for published entry', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'cl-detail')
+    const { id: projectId, widgetKey } = await createProject(app, cookie, 'cl-detail')
+
+    const createRes = await app.inject({
+      method: 'POST',
+      url: `/api/v1/projects/${projectId}/changelog`,
+      headers: { cookie },
+      payload: { title: 'Detail Entry', content: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Hello' }] }] } },
+    })
+    expect(createRes.statusCode).toBe(201)
+    const entryId = JSON.parse(createRes.body).id
+
+    await app.inject({
+      method: 'POST',
+      url: `/api/v1/projects/${projectId}/changelog/${entryId}/publish`,
+      headers: { cookie },
+    })
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/public/${widgetKey}/changelog/${entryId}`,
+    })
+
+    expect(res.statusCode).toBe(200)
+    const entry = JSON.parse(res.body)
+    expect(entry.id).toBe(entryId)
+    expect(entry.title).toBe('Detail Entry')
+    expect(entry.content).toMatchObject({ type: 'doc', content: expect.any(Array) })
+  })
+
+  it('returns 404 for draft entry', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'cl-detail-draft')
+    const { id: projectId, widgetKey } = await createProject(app, cookie, 'cl-detail-draft')
+
+    const createRes = await app.inject({
+      method: 'POST',
+      url: `/api/v1/projects/${projectId}/changelog`,
+      headers: { cookie },
+      payload: { title: 'Draft Only', content: { type: 'doc', content: [] } },
+    })
+    const draftId = JSON.parse(createRes.body).id
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/public/${widgetKey}/changelog/${draftId}`,
+    })
+
+    expect(res.statusCode).toBe(404)
+  })
+
+  it('returns 404 for unknown entry id', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'cl-detail-miss')
+    const { widgetKey } = await createProject(app, cookie, 'cl-detail-miss')
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/public/${widgetKey}/changelog/${crypto.randomUUID()}`,
+    })
+
+    expect(res.statusCode).toBe(404)
+  })
+
+  it('returns 404 for unknown project key', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/public/${crypto.randomUUID()}/changelog/${crypto.randomUUID()}`,
+    })
+
+    expect(res.statusCode).toBe(404)
+  })
+})
+
 // ─── GET /api/v1/public/:projectKey/roadmap ──────────────────────────────────
 
 describe('GET /api/v1/public/:projectKey/roadmap', () => {

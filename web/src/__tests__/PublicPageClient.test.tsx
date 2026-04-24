@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import PublicPageClient from '@/app/(public)/[orgSlug]/[projectSlug]/PublicPageClient'
 import type { PublicChangelogEntry, PublicFeature, PublicRoadmapItem } from '@/types/public'
 
@@ -9,6 +9,19 @@ jest.mock('next/link', () => {
   MockLink.displayName = 'Link'
   return MockLink
 })
+
+jest.mock('@/components/RichTextViewer', () => {
+  function MockRichTextViewer() {
+    return <div data-testid="rich-text-viewer" />
+  }
+  return MockRichTextViewer
+})
+
+jest.mock('@/lib/api', () => ({
+  apiFetch: jest.fn(),
+}))
+
+const mockApiFetch = jest.requireMock('@/lib/api').apiFetch as jest.Mock
 
 function makeChangelog(overrides: Partial<PublicChangelogEntry> = {}): PublicChangelogEntry {
   return {
@@ -47,29 +60,42 @@ function makeFeature(overrides: Partial<PublicFeature> = {}): PublicFeature {
   }
 }
 
-const BASE_PROPS = { changelog: [], roadmap: [], features: [] }
+const BASE_PROPS = { changelog: [], roadmap: [], features: [], projectKey: 'test-key' }
+
+function mockFetchSuccess(content = { type: 'doc', content: [] }) {
+  mockApiFetch.mockResolvedValue({
+    ok: true,
+    json: () => Promise.resolve({ content }),
+  })
+}
+
+function mockFetchFailure() {
+  mockApiFetch.mockRejectedValue(new Error('Network error'))
+}
+
+beforeEach(() => {
+  mockApiFetch.mockReset()
+})
 
 describe('PublicPageClient — tab nav', () => {
   it('renders all three tab links', () => {
     render(<PublicPageClient {...BASE_PROPS} activeTab="changelog" />)
-    expect(screen.getByRole('tab', { name: 'Changelog' })).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: 'Roadmap' })).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: 'Features' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Changelog' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Roadmap' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Features' })).toBeInTheDocument()
   })
 
-  it('marks active tab with aria-selected and aria-current', () => {
+  it('marks active tab with aria-current', () => {
     render(<PublicPageClient {...BASE_PROPS} activeTab="roadmap" />)
-    const roadmapTab = screen.getByRole('tab', { name: 'Roadmap' })
-    expect(roadmapTab).toHaveAttribute('aria-selected', 'true')
-    expect(roadmapTab).toHaveAttribute('aria-current', 'page')
-    expect(screen.getByRole('tab', { name: 'Changelog' })).toHaveAttribute('aria-selected', 'false')
+    expect(screen.getByRole('link', { name: 'Roadmap' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('link', { name: 'Changelog' })).not.toHaveAttribute('aria-current')
   })
 
   it('tab links point to correct ?tab= URLs', () => {
     render(<PublicPageClient {...BASE_PROPS} activeTab="changelog" />)
-    expect(screen.getByRole('tab', { name: 'Roadmap' })).toHaveAttribute('href', '?tab=roadmap')
-    expect(screen.getByRole('tab', { name: 'Features' })).toHaveAttribute('href', '?tab=features')
-    expect(screen.getByRole('tab', { name: 'Changelog' })).toHaveAttribute('href', '?tab=changelog')
+    expect(screen.getByRole('link', { name: 'Roadmap' })).toHaveAttribute('href', '?tab=roadmap')
+    expect(screen.getByRole('link', { name: 'Features' })).toHaveAttribute('href', '?tab=features')
+    expect(screen.getByRole('link', { name: 'Changelog' })).toHaveAttribute('href', '?tab=changelog')
   })
 })
 
@@ -100,6 +126,80 @@ describe('PublicPageClient — changelog tab', () => {
   it('does not render when activeTab is not changelog', () => {
     render(<PublicPageClient {...BASE_PROPS} changelog={[makeChangelog()]} activeTab="roadmap" />)
     expect(screen.queryByText('Initial Release')).not.toBeInTheDocument()
+  })
+
+  it('does not show viewer before clicking an entry', () => {
+    render(<PublicPageClient {...BASE_PROPS} changelog={[makeChangelog()]} activeTab="changelog" />)
+    expect(screen.queryByTestId('rich-text-viewer')).not.toBeInTheDocument()
+  })
+
+  it('fetches and shows viewer after clicking an entry', async () => {
+    mockFetchSuccess()
+    render(<PublicPageClient {...BASE_PROPS} changelog={[makeChangelog()]} activeTab="changelog" />)
+    fireEvent.click(screen.getByRole('button', { name: /initial release/i }))
+    await waitFor(() => expect(screen.getByTestId('rich-text-viewer')).toBeInTheDocument())
+    expect(mockApiFetch).toHaveBeenCalledWith('/api/v1/public/test-key/changelog/cl-1')
+  })
+
+  it('collapses entry on second click', async () => {
+    mockFetchSuccess()
+    render(<PublicPageClient {...BASE_PROPS} changelog={[makeChangelog()]} activeTab="changelog" />)
+    const btn = screen.getByRole('button', { name: /initial release/i })
+    fireEvent.click(btn)
+    await waitFor(() => expect(screen.getByTestId('rich-text-viewer')).toBeInTheDocument())
+    fireEvent.click(btn)
+    expect(screen.queryByTestId('rich-text-viewer')).not.toBeInTheDocument()
+  })
+
+  it('toggles aria-expanded on click', () => {
+    mockFetchSuccess()
+    render(<PublicPageClient {...BASE_PROPS} changelog={[makeChangelog()]} activeTab="changelog" />)
+    const btn = screen.getByRole('button', { name: /initial release/i })
+    expect(btn).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(btn)
+    expect(btn).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('button has aria-controls pointing to content region', () => {
+    render(<PublicPageClient {...BASE_PROPS} changelog={[makeChangelog()]} activeTab="changelog" />)
+    const btn = screen.getByRole('button', { name: /initial release/i })
+    expect(btn).toHaveAttribute('aria-controls', 'changelog-content-cl-1')
+    expect(document.getElementById('changelog-content-cl-1')).toBeInTheDocument()
+  })
+
+  it('caches content — does not refetch on re-expand', async () => {
+    mockFetchSuccess()
+    render(<PublicPageClient {...BASE_PROPS} changelog={[makeChangelog()]} activeTab="changelog" />)
+    const btn = screen.getByRole('button', { name: /initial release/i })
+    fireEvent.click(btn)
+    await waitFor(() => expect(screen.getByTestId('rich-text-viewer')).toBeInTheDocument())
+    fireEvent.click(btn)
+    fireEvent.click(btn)
+    await waitFor(() => expect(screen.getByTestId('rich-text-viewer')).toBeInTheDocument())
+    expect(mockApiFetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('switching to another entry collapses the first', async () => {
+    mockFetchSuccess()
+    const entries = [
+      makeChangelog({ id: 'cl-1', title: 'Entry One' }),
+      makeChangelog({ id: 'cl-2', title: 'Entry Two' }),
+    ]
+    render(<PublicPageClient {...BASE_PROPS} changelog={entries} activeTab="changelog" />)
+    fireEvent.click(screen.getByRole('button', { name: /entry one/i }))
+    await waitFor(() => expect(screen.getAllByTestId('rich-text-viewer')).toHaveLength(1))
+    fireEvent.click(screen.getByRole('button', { name: /entry two/i }))
+    await waitFor(() => expect(screen.getAllByTestId('rich-text-viewer')).toHaveLength(1))
+    expect(screen.getByRole('button', { name: /entry one/i })).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByRole('button', { name: /entry two/i })).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('shows no viewer when fetch fails', async () => {
+    mockFetchFailure()
+    render(<PublicPageClient {...BASE_PROPS} changelog={[makeChangelog()]} activeTab="changelog" />)
+    fireEvent.click(screen.getByRole('button', { name: /initial release/i }))
+    await waitFor(() => expect(screen.getByRole('button', { name: /initial release/i })).toHaveAttribute('aria-expanded', 'true'))
+    expect(screen.queryByTestId('rich-text-viewer')).not.toBeInTheDocument()
   })
 })
 

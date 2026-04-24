@@ -398,6 +398,35 @@ export default async function publicRoutes(fastify: FastifyInstance) {
     },
   )
 
+  // GET /:projectKey/changelog/:entryId — single published entry with content
+  fastify.get(
+    '/:projectKey/changelog/:entryId',
+    {
+      config: { rateLimit: { max: PAGE_RATE_LIMIT, timeWindow: 3_600_000 } },
+    },
+    async (req, reply) => {
+      const { projectKey, entryId } = req.params as { projectKey: string; entryId: string }
+
+      if (projectKey.length > PROJECT_KEY_MAX_LEN) {
+        return reply.status(404).send({ message: 'Project not found' })
+      }
+
+      const project = await fastify.prisma.project.findUnique({
+        where: { widgetKey: projectKey, isActive: true },
+        select: { id: true },
+      })
+      if (!project) return reply.status(404).send({ message: 'Project not found' })
+
+      const entry = await fastify.prisma.changelogEntry.findUnique({
+        where: { id: entryId, projectId: project.id, status: 'published' },
+        select: { id: true, title: true, version: true, status: true, publishedAt: true, categoryId: true, content: true },
+      })
+      if (!entry) return reply.status(404).send({ message: 'Entry not found' })
+
+      return reply.send(entry)
+    },
+  )
+
   // GET /:projectKey/roadmap — all roadmap items for public page
   fastify.get(
     '/:projectKey/roadmap',
