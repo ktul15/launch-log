@@ -8,7 +8,7 @@ const jwtShape = /^[\w-]+\.[\w-]+\.[\w-]+$/
 // Strip anything outside the base64url alphabet before embedding in a Cookie header value
 // to prevent semicolon-based header injection (e.g. "a.b.c; injected-header: val").
 function sanitizeToken(token: string): string {
-  return token.replace(/[^A-Za-z0-9\-_.]/g, '')
+  return token.replace(/[\r\n]/g, '')
 }
 
 export default async function AdminLayout({ children }: { children: ReactNode }) {

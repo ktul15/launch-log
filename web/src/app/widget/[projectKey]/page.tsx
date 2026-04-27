@@ -8,8 +8,9 @@ import type {
   PublicFeature,
   PublicRoadmapItem,
 } from '@/types/public'
+import { parseWidgetSettings } from '@/lib/widgetSettings'
 
-const BACKEND = process.env.BACKEND_URL ?? 'http://localhost:3001'
+const BACKEND = process.env.BACKEND_URL ?? process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'
 const REVALIDATE_SECONDS = 60
 
 function fetchOpts() {
@@ -34,9 +35,15 @@ const fetchInfo = cache(async (projectKey: string): Promise<WidgetProject | null
   }
   if (res.status === 404) return null
   if (!res.ok) throw new Error(`Backend error fetching project info: ${res.status}`)
-  const raw = await res.json() as Partial<WidgetProject>
+  const raw = await res.json() as Record<string, unknown>
   if (!raw.name || !raw.orgName || !raw.plan) throw new Error('Unexpected info response shape')
-  return raw as WidgetProject
+  return {
+    name: raw.name as string,
+    description: typeof raw.description === 'string' ? raw.description : null,
+    orgName: raw.orgName as string,
+    plan: raw.plan as string,
+    widgetSettings: parseWidgetSettings(raw.widgetSettings),
+  }
 })
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {

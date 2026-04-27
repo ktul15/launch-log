@@ -43,7 +43,7 @@ const ROADMAP_COLUMNS: {
 ]
 
 const KNOWN_ROADMAP_STATUSES = new Set(ROADMAP_COLUMNS.map((c) => c.status))
-const TABS: Tab[] = ['changelog', 'roadmap', 'features']
+const ALL_TABS: Tab[] = ['changelog', 'roadmap', 'features']
 
 function formatDate(iso: string): string {
   const d = new Date(iso)
@@ -64,7 +64,15 @@ const EMPTY_CONTENT = '__empty__' as const
 type ContentCacheValue = TipTapDoc | typeof EMPTY_CONTENT
 
 export default function WidgetClient({ project, changelog, roadmap, features, projectKey }: Props) {
-  const [activeTab, setActiveTab] = useState<Tab>('changelog')
+  const ws = project.widgetSettings
+  const TAB_ENABLED: Record<Tab, boolean> = {
+    changelog: ws.showChangelog,
+    roadmap: ws.showRoadmap,
+    features: ws.showFeatures,
+  }
+  const TABS = ALL_TABS.filter((t) => TAB_ENABLED[t])
+
+  const [activeTab, setActiveTab] = useState<Tab>(TABS[0] ?? 'changelog')
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [contentCache, setContentCache] = useState<Record<string, ContentCacheValue>>({})
   const [loadingIds, setLoadingIds] = useState<Set<string>>(new Set())
@@ -126,7 +134,7 @@ export default function WidgetClient({ project, changelog, roadmap, features, pr
   const panelId = (tab: Tab) => `widget-panel-${tab}`
 
   return (
-    <div className="flex min-h-screen flex-col bg-white text-sm">
+    <div className="flex min-h-screen flex-col text-sm" style={{ backgroundColor: ws.backgroundColor }}>
       {/* Compact header */}
       <header className="border-b border-gray-200 px-3 py-3">
         <p className="text-xs font-medium uppercase tracking-wide text-gray-400">{project.orgName}</p>
@@ -152,10 +160,18 @@ export default function WidgetClient({ project, changelog, roadmap, features, pr
               aria-controls={panelId(t)}
               onClick={() => setActiveTab(t)}
               className={`flex-shrink-0 whitespace-nowrap px-3 py-2 text-xs font-medium transition-colors ${
-                activeTab === t
-                  ? 'border-b-2 border-blue-600 text-blue-600'
-                  : 'text-gray-500 hover:text-gray-800'
+                activeTab === t ? '' : 'text-gray-500 hover:text-gray-800'
               }`}
+              style={
+                activeTab === t
+                  ? {
+                      borderBottomWidth: 2,
+                      borderBottomStyle: 'solid',
+                      borderBottomColor: ws.primaryColor,
+                      color: ws.primaryColor,
+                    }
+                  : undefined
+              }
             >
               {TAB_LABELS[t]}
             </button>
@@ -163,128 +179,136 @@ export default function WidgetClient({ project, changelog, roadmap, features, pr
         </div>
       </nav>
 
-      {/* Tab panels */}
+      {/* Tab panels — only rendered for enabled tabs to avoid orphaned aria-labelledby refs */}
       <div className="flex-1 overflow-y-auto px-3 py-4">
-        <div
-          role="tabpanel"
-          id={panelId('changelog')}
-          aria-labelledby="widget-tab-changelog"
-          hidden={activeTab !== 'changelog'}
-        >
-          <div className="space-y-4">
-            {changelog.length === 0 && (
-              <p className="text-xs text-gray-500">No changelog entries yet.</p>
-            )}
-            {changelog.map((entry) => {
-              const isExpanded = expandedId === entry.id
-              const isLoading = loadingIds.has(entry.id)
-              const isError = errorIds.has(entry.id)
-              const cached = contentCache[entry.id]
+        {TABS.length === 0 && (
+          <p className="text-xs text-gray-400">No content available.</p>
+        )}
 
-              return (
-                <div key={entry.id} className="border-b border-gray-100 pb-4">
-                  {/* aria-label removed — <h3> inside button already forms the accessible name.
-                      Version badge and date are now announced by screen readers. */}
-                  <button
-                    className="w-full text-left"
-                    onClick={() => handleExpand(entry.id)}
-                    aria-expanded={isExpanded}
-                    aria-controls={`changelog-content-${entry.id}`}
-                  >
-                    <div className="mb-1 flex flex-wrap items-center gap-1.5">
-                      {entry.version && (
-                        <span className="rounded bg-gray-100 px-1.5 py-0.5 text-xs font-mono text-gray-600">
-                          {entry.version}
+        {ws.showChangelog && (
+          <div
+            role="tabpanel"
+            id={panelId('changelog')}
+            aria-labelledby="widget-tab-changelog"
+            hidden={activeTab !== 'changelog'}
+          >
+            <div className="space-y-4">
+              {changelog.length === 0 && (
+                <p className="text-xs text-gray-500">No changelog entries yet.</p>
+              )}
+              {changelog.map((entry) => {
+                const isExpanded = expandedId === entry.id
+                const isLoading = loadingIds.has(entry.id)
+                const isError = errorIds.has(entry.id)
+                const cached = contentCache[entry.id]
+
+                return (
+                  <div key={entry.id} className="border-b border-gray-100 pb-4">
+                    <button
+                      className="w-full text-left"
+                      onClick={() => handleExpand(entry.id)}
+                      aria-expanded={isExpanded}
+                      aria-controls={`changelog-content-${entry.id}`}
+                    >
+                      <div className="mb-1 flex flex-wrap items-center gap-1.5">
+                        {entry.version && (
+                          <span className="rounded bg-gray-100 px-1.5 py-0.5 text-xs font-mono text-gray-600">
+                            {entry.version}
+                          </span>
+                        )}
+                        {entry.publishedAt && (() => {
+                          const formatted = formatDate(entry.publishedAt)
+                          return formatted ? (
+                            <span className="text-xs text-gray-400">{formatted}</span>
+                          ) : null
+                        })()}
+                        <span className="ml-auto text-xs text-gray-400" aria-hidden="true">
+                          {isExpanded ? '▾' : '▸'}
                         </span>
+                      </div>
+                      <h3 className="text-sm font-semibold text-gray-900">{entry.title}</h3>
+                    </button>
+                    <div
+                      id={`changelog-content-${entry.id}`}
+                      role="region"
+                      aria-live="polite"
+                      aria-busy={isLoading}
+                    >
+                      {isExpanded && (
+                        <div className="mt-3">
+                          {isLoading ? (
+                            <>
+                              <div className="min-h-[32px] animate-pulse rounded bg-gray-50" />
+                              <span className="sr-only">Loading content…</span>
+                            </>
+                          ) : isError ? (
+                            <p className="text-xs text-red-500">Failed to load. Try again.</p>
+                          ) : cached === EMPTY_CONTENT ? (
+                            <p className="text-xs text-gray-400">No content yet.</p>
+                          ) : cached ? (
+                            <RichTextViewer content={cached} />
+                          ) : null}
+                        </div>
                       )}
-                      {entry.publishedAt && (() => {
-                        const formatted = formatDate(entry.publishedAt)
-                        return formatted ? (
-                          <span className="text-xs text-gray-400">{formatted}</span>
-                        ) : null
-                      })()}
-                      <span className="ml-auto text-xs text-gray-400" aria-hidden="true">
-                        {isExpanded ? '▾' : '▸'}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
+        {ws.showRoadmap && (
+          <div
+            role="tabpanel"
+            id={panelId('roadmap')}
+            aria-labelledby="widget-tab-roadmap"
+            hidden={activeTab !== 'roadmap'}
+          >
+            <div className="space-y-4">
+              {ROADMAP_COLUMNS.map(({ status, label, headerStyle, cardBorder }) => {
+                const items = knownRoadmapItems.filter((i) => i.status === status)
+                return (
+                  <section key={status} aria-label={label}>
+                    <div className={`mb-2 flex items-center justify-between rounded-md px-3 py-1.5 ${headerStyle}`}>
+                      <h3 className="text-xs font-semibold uppercase tracking-wide">{label}</h3>
+                      <span
+                        className="rounded-full bg-white/60 px-1.5 py-0.5 text-xs font-medium"
+                        aria-label={`${items.length} items`}
+                      >
+                        {items.length}
                       </span>
                     </div>
-                    <h3 className="text-sm font-semibold text-gray-900">{entry.title}</h3>
-                  </button>
-                  <div
-                    id={`changelog-content-${entry.id}`}
-                    role="region"
-                    aria-live="polite"
-                    aria-busy={isLoading}
-                  >
-                    {isExpanded && (
-                      <div className="mt-3">
-                        {isLoading ? (
-                          <>
-                            <div className="min-h-[32px] animate-pulse rounded bg-gray-50" />
-                            <span className="sr-only">Loading content…</span>
-                          </>
-                        ) : isError ? (
-                          <p className="text-xs text-red-500">Failed to load. Try again.</p>
-                        ) : cached === EMPTY_CONTENT ? (
-                          <p className="text-xs text-gray-400">No content yet.</p>
-                        ) : cached ? (
-                          <RichTextViewer content={cached} />
-                        ) : null}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )
-            })}
+                    <div className="space-y-1.5">
+                      {items.length === 0 && (
+                        <p className="py-1 text-center text-xs text-gray-400">Nothing here yet.</p>
+                      )}
+                      {items.map((item) => (
+                        <div key={item.id} className={`rounded-lg border border-gray-200 border-l-4 p-2.5 ${cardBorder}`}>
+                          <p className="text-xs font-medium text-gray-900">{item.title}</p>
+                          {item.description && (
+                            <p className="mt-0.5 text-xs text-gray-500">{item.description}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                )
+              })}
+            </div>
           </div>
-        </div>
+        )}
 
-        <div
-          role="tabpanel"
-          id={panelId('roadmap')}
-          aria-labelledby="widget-tab-roadmap"
-          hidden={activeTab !== 'roadmap'}
-        >
-          <div className="space-y-4">
-            {ROADMAP_COLUMNS.map(({ status, label, headerStyle, cardBorder }) => {
-              const items = knownRoadmapItems.filter((i) => i.status === status)
-              return (
-                <section key={status} aria-label={label}>
-                  <div className={`mb-2 flex items-center justify-between rounded-md px-3 py-1.5 ${headerStyle}`}>
-                    <h3 className="text-xs font-semibold uppercase tracking-wide">{label}</h3>
-                    <span
-                      className="rounded-full bg-white/60 px-1.5 py-0.5 text-xs font-medium"
-                      aria-label={`${items.length} items`}
-                    >
-                      {items.length}
-                    </span>
-                  </div>
-                  <div className="space-y-1.5">
-                    {items.length === 0 && (
-                      <p className="py-1 text-center text-xs text-gray-400">Nothing here yet.</p>
-                    )}
-                    {items.map((item) => (
-                      <div key={item.id} className={`rounded-lg border border-gray-200 border-l-4 p-2.5 ${cardBorder}`}>
-                        <p className="text-xs font-medium text-gray-900">{item.title}</p>
-                        {item.description && (
-                          <p className="mt-0.5 text-xs text-gray-500">{item.description}</p>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </section>
-              )
-            })}
+        {ws.showFeatures && (
+          <div
+            role="tabpanel"
+            id={panelId('features')}
+            aria-labelledby="widget-tab-features"
+            hidden={activeTab !== 'features'}
+          >
+            <FeaturesTab initialFeatures={features} projectKey={projectKey} />
           </div>
-        </div>
-
-        <div
-          role="tabpanel"
-          id={panelId('features')}
-          aria-labelledby="widget-tab-features"
-          hidden={activeTab !== 'features'}
-        >
-          <FeaturesTab initialFeatures={features} projectKey={projectKey} />
-        </div>
+        )}
 
         <div className="mt-8 border-t border-gray-200 pt-6">
           <SubscribeForm projectKey={projectKey} />

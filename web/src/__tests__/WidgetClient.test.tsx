@@ -1,6 +1,8 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import WidgetClient from '@/app/widget/[projectKey]/WidgetClient'
 import type { WidgetProject, PublicChangelogEntry, PublicFeature, PublicRoadmapItem } from '@/types/public'
+import { DEFAULT_WIDGET_SETTINGS } from '@/types/widget'
+import type { WidgetSettings } from '@/types/widget'
 
 jest.mock('@/components/RichTextViewer', () => {
   function MockRichTextViewer() {
@@ -35,6 +37,7 @@ function makeProject(overrides: Partial<WidgetProject> = {}): WidgetProject {
     description: 'A great product',
     orgName: 'Acme Corp',
     plan: 'free',
+    widgetSettings: { ...DEFAULT_WIDGET_SETTINGS },
     ...overrides,
   }
 }
@@ -312,5 +315,58 @@ describe('WidgetClient — free-tier footer', () => {
   it('does not render footer for pro plan', () => {
     render(<WidgetClient {...BASE_PROPS} project={makeProject({ plan: 'pro' })} />)
     expect(screen.queryByRole('link', { name: /powered by launchlog/i })).not.toBeInTheDocument()
+  })
+})
+
+describe('WidgetClient — widgetSettings', () => {
+  it('shows all tabs with default settings', () => {
+    render(<WidgetClient {...BASE_PROPS} />)
+    expect(screen.getByRole('tab', { name: 'Changelog' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Roadmap' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Features' })).toBeInTheDocument()
+  })
+
+  it('hides Roadmap tab when showRoadmap is false', () => {
+    const ws: WidgetSettings = { ...DEFAULT_WIDGET_SETTINGS, showRoadmap: false }
+    render(<WidgetClient {...BASE_PROPS} project={makeProject({ widgetSettings: ws })} />)
+    expect(screen.queryByRole('tab', { name: 'Roadmap' })).not.toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Changelog' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Features' })).toBeInTheDocument()
+  })
+
+  it('hides Features tab when showFeatures is false', () => {
+    const ws: WidgetSettings = { ...DEFAULT_WIDGET_SETTINGS, showFeatures: false }
+    render(<WidgetClient {...BASE_PROPS} project={makeProject({ widgetSettings: ws })} />)
+    expect(screen.queryByRole('tab', { name: 'Features' })).not.toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Changelog' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Roadmap' })).toBeInTheDocument()
+  })
+
+  it('hides Changelog tab when showChangelog is false', () => {
+    const ws: WidgetSettings = { ...DEFAULT_WIDGET_SETTINGS, showChangelog: false }
+    render(<WidgetClient {...BASE_PROPS} project={makeProject({ widgetSettings: ws })} />)
+    expect(screen.queryByRole('tab', { name: 'Changelog' })).not.toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Roadmap' })).toBeInTheDocument()
+  })
+
+  it('shows no tabs and fallback message when all tabs disabled', () => {
+    const ws: WidgetSettings = {
+      ...DEFAULT_WIDGET_SETTINGS,
+      showChangelog: false,
+      showRoadmap: false,
+      showFeatures: false,
+    }
+    render(<WidgetClient {...BASE_PROPS} project={makeProject({ widgetSettings: ws })} />)
+    expect(screen.queryByRole('tab')).not.toBeInTheDocument()
+    expect(screen.getByText('No content available.')).toBeInTheDocument()
+  })
+
+  it('applies backgroundColor as inline style on root container', () => {
+    const ws: WidgetSettings = { ...DEFAULT_WIDGET_SETTINGS, backgroundColor: '#123456' }
+    const { container } = render(
+      <WidgetClient {...BASE_PROPS} project={makeProject({ widgetSettings: ws })} />,
+    )
+    const root = container.firstChild as HTMLElement
+    expect(root.style.backgroundColor).toBe('rgb(18, 52, 86)')
   })
 })

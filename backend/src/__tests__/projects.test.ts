@@ -754,6 +754,151 @@ describe('PATCH /api/v1/projects/:id', () => {
   })
 })
 
+// ─── PATCH /api/v1/projects/:id — widgetSettings ─────────────────────────────
+
+const VALID_WIDGET_SETTINGS = {
+  showChangelog: true,
+  showRoadmap: false,
+  showFeatures: true,
+  buttonPosition: 'bottom-left',
+  primaryColor: '#ff0000',
+  backgroundColor: '#ffffff',
+}
+
+describe('PATCH /api/v1/projects/:id — widgetSettings', () => {
+  it('saves valid widgetSettings and returns 200', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'ws-save')
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/v1/projects',
+      headers: { cookie },
+      payload: { name: 'WS Save', slug: testSlug('ws-save') },
+    })
+    const { id } = JSON.parse(created.body)
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/projects/${id}`,
+      headers: { cookie },
+      payload: { widgetSettings: VALID_WIDGET_SETTINGS },
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body).widgetSettings).toEqual(VALID_WIDGET_SETTINGS)
+  })
+
+  it('persists widgetSettings to DB', async () => {
+    const { cookie, orgId } = await registerAndGetCookie(app, 'ws-persist')
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/v1/projects',
+      headers: { cookie },
+      payload: { name: 'WS Persist', slug: testSlug('ws-persist') },
+    })
+    const { id } = JSON.parse(created.body)
+
+    await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/projects/${id}`,
+      headers: { cookie },
+      payload: { widgetSettings: VALID_WIDGET_SETTINGS },
+    })
+
+    const project = await prisma.project.findFirst({ where: { id, orgId } })
+    expect(project!.widgetSettings).toEqual(VALID_WIDGET_SETTINGS)
+  })
+
+  it('GET returns updated widgetSettings after PATCH', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'ws-get-after-patch')
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/v1/projects',
+      headers: { cookie },
+      payload: { name: 'WS Get', slug: testSlug('ws-get') },
+    })
+    const { id } = JSON.parse(created.body)
+
+    await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/projects/${id}`,
+      headers: { cookie },
+      payload: { widgetSettings: VALID_WIDGET_SETTINGS },
+    })
+
+    const getRes = await app.inject({
+      method: 'GET',
+      url: `/api/v1/projects/${id}`,
+      headers: { cookie },
+    })
+    expect(getRes.statusCode).toBe(200)
+    expect(JSON.parse(getRes.body).widgetSettings).toEqual(VALID_WIDGET_SETTINGS)
+  })
+
+  it('returns 422 for partial widgetSettings (missing fields)', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'ws-partial')
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/v1/projects',
+      headers: { cookie },
+      payload: { name: 'WS Partial', slug: testSlug('ws-partial') },
+    })
+    const { id } = JSON.parse(created.body)
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/projects/${id}`,
+      headers: { cookie },
+      payload: { widgetSettings: { showChangelog: true } },
+    })
+
+    expect(res.statusCode).toBe(422)
+  })
+
+  it('returns 422 for invalid hex primaryColor', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'ws-bad-color')
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/v1/projects',
+      headers: { cookie },
+      payload: { name: 'WS Bad Color', slug: testSlug('ws-bad-color') },
+    })
+    const { id } = JSON.parse(created.body)
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/projects/${id}`,
+      headers: { cookie },
+      payload: {
+        widgetSettings: { ...VALID_WIDGET_SETTINGS, primaryColor: 'not-a-hex' },
+      },
+    })
+
+    expect(res.statusCode).toBe(422)
+  })
+
+  it('returns 422 for invalid buttonPosition', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'ws-bad-pos')
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/v1/projects',
+      headers: { cookie },
+      payload: { name: 'WS Bad Pos', slug: testSlug('ws-bad-pos') },
+    })
+    const { id } = JSON.parse(created.body)
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/projects/${id}`,
+      headers: { cookie },
+      payload: {
+        widgetSettings: { ...VALID_WIDGET_SETTINGS, buttonPosition: 'middle-center' },
+      },
+    })
+
+    expect(res.statusCode).toBe(422)
+  })
+})
+
 // ─── DELETE /api/v1/projects/:id ──────────────────────────────────────────────
 
 describe('DELETE /api/v1/projects/:id', () => {
