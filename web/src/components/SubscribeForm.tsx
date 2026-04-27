@@ -16,7 +16,7 @@ export default function SubscribeForm({ projectKey }: { projectKey: string }) {
     setErrorMessage(null)
 
     try {
-      const res = await apiFetch(`/api/v1/public/${projectKey}/subscribe`, {
+      const res = await apiFetch(`/api/v1/public/${encodeURIComponent(projectKey)}/subscribe`, {
         method: 'POST',
         body: JSON.stringify({ email }),
       })
