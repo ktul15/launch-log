@@ -138,7 +138,7 @@ describe('PublicPageClient — changelog tab', () => {
     render(<PublicPageClient {...BASE_PROPS} changelog={[makeChangelog()]} activeTab="changelog" />)
     fireEvent.click(screen.getByRole('button', { name: /initial release/i }))
     await waitFor(() => expect(screen.getByTestId('rich-text-viewer')).toBeInTheDocument())
-    expect(mockApiFetch).toHaveBeenCalledWith('/api/v1/public/test-key/changelog/cl-1')
+    expect(mockApiFetch).toHaveBeenCalledWith('/api/v1/public/test-key/changelog/cl-1', expect.any(Object))
   })
 
   it('collapses entry on second click', async () => {

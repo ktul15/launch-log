@@ -1,8 +1,9 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import Link from 'next/link'
 import RichTextViewer from '@/components/RichTextViewer'
+import FeaturesTab from './FeaturesTab'
 import { apiFetch } from '@/lib/api'
 import type { TipTapDoc } from '@/types/changelog'
 import type { PublicChangelogEntry, PublicFeature, PublicRoadmapItem } from '@/types/public'
@@ -13,14 +14,6 @@ const TAB_LABELS: Record<Tab, string> = {
   changelog: 'Changelog',
   roadmap: 'Roadmap',
   features: 'Features',
-}
-
-const STATUS_LABELS: Record<string, string> = {
-  open: 'Open',
-  planned: 'Planned',
-  in_progress: 'In Progress',
-  shipped: 'Shipped',
-  closed: 'Closed',
 }
 
 // Single source of truth for roadmap column config — status, label, and visual styles co-located.
@@ -71,8 +64,11 @@ interface Props {
 export default function PublicPageClient({ changelog, roadmap, features, activeTab, projectKey }: Props) {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [contentCache, setContentCache] = useState<Record<string, TipTapDoc>>({})
-  const [loadingId, setLoadingId] = useState<string | null>(null)
+  // fix 21: per-entry loading set prevents one entry's fetch clobbering another's loading state
+  const [loadingIds, setLoadingIds] = useState<Set<string>>(new Set())
   const [errorId, setErrorId] = useState<string | null>(null)
+  // fix 22: per-entry AbortController so re-expanding an entry cancels any stale in-flight fetch
+  const abortRefs = useRef(new Map<string, AbortController>())
 
   // Only render items whose status matches a known column — guards against future backend enum additions.
   const knownRoadmapItems = roadmap.filter((i) => KNOWN_ROADMAP_STATUSES.has(i.status))
@@ -85,9 +81,17 @@ export default function PublicPageClient({ changelog, roadmap, features, activeT
     setExpandedId(entryId)
     setErrorId(null)
     if (contentCache[entryId]) return
-    setLoadingId(entryId)
+
+    // fix 22: cancel any prior in-flight fetch for this entry before starting a new one
+    abortRefs.current.get(entryId)?.abort()
+    const controller = new AbortController()
+    abortRefs.current.set(entryId, controller)
+
+    setLoadingIds((prev) => { const s = new Set(prev); s.add(entryId); return s })
     try {
-      const res = await apiFetch(`/api/v1/public/${projectKey}/changelog/${entryId}`)
+      const res = await apiFetch(`/api/v1/public/${projectKey}/changelog/${entryId}`, {
+        signal: controller.signal,
+      })
       if (res.ok) {
         const data = await res.json()
         if (data.content) {
@@ -96,10 +100,14 @@ export default function PublicPageClient({ changelog, roadmap, features, activeT
       } else {
         setErrorId(entryId)
       }
-    } catch {
-      setErrorId(entryId)
+    } catch (err) {
+      // AbortError means we intentionally cancelled — don't surface as an error
+      if (err instanceof Error && err.name !== 'AbortError') {
+        setErrorId(entryId)
+      }
     } finally {
-      setLoadingId(null)
+      abortRefs.current.delete(entryId)
+      setLoadingIds((prev) => { const s = new Set(prev); s.delete(entryId); return s })
     }
   }
 
@@ -157,7 +165,7 @@ export default function PublicPageClient({ changelog, roadmap, features, activeT
               <div id={`changelog-content-${entry.id}`}>
                 {expandedId === entry.id && (
                   <div className="mt-4">
-                    {loadingId === entry.id ? (
+                    {loadingIds.has(entry.id) ? (
                       <div className="min-h-[40px] animate-pulse rounded bg-gray-50" />
                     ) : errorId === entry.id ? (
                       <p className="text-xs text-red-500">Failed to load content. Try again.</p>
@@ -207,28 +215,7 @@ export default function PublicPageClient({ changelog, roadmap, features, activeT
       )}
 
       {activeTab === 'features' && (
-        <div className="space-y-3">
-          {features.length === 0 && (
-            <p className="text-sm text-gray-500">No feature requests yet.</p>
-          )}
-          {features.map((f) => (
-            <div key={f.id} className="flex items-start gap-4 rounded-lg border border-gray-200 p-4">
-              <div className="flex min-w-[3rem] flex-col items-center rounded-md bg-gray-50 px-3 py-2">
-                <span className="text-lg font-bold text-gray-900">{f.voteCount}</span>
-                <span className="text-xs text-gray-400">votes</span>
-              </div>
-              <div className="flex-1 min-w-0">
-                <h3 className="text-sm font-semibold text-gray-900">{f.title}</h3>
-                {f.description && (
-                  <p className="mt-1 text-xs text-gray-500 line-clamp-2">{f.description}</p>
-                )}
-                <span className="mt-2 inline-block rounded-full bg-blue-50 px-2 py-0.5 text-xs text-blue-700">
-                  {STATUS_LABELS[f.status] ?? f.status}
-                </span>
-              </div>
-            </div>
-          ))}
-        </div>
+        <FeaturesTab initialFeatures={features} projectKey={projectKey} />
       )}
     </div>
   )
