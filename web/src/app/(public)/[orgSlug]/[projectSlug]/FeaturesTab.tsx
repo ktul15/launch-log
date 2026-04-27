@@ -331,7 +331,7 @@ export default function FeaturesTab({ initialFeatures, projectKey }: Props) {
                 </div>
 
                 <div className="flex-1 min-w-0">
-                  <h3 className="text-sm font-semibold text-gray-900">{f.title}</h3>
+                  <h3 className="break-words text-sm font-semibold text-gray-900">{f.title}</h3>
                   {f.description && (
                     <p className="mt-1 text-xs text-gray-500 line-clamp-2">{f.description}</p>
                   )}
@@ -345,7 +345,7 @@ export default function FeaturesTab({ initialFeatures, projectKey }: Props) {
 
               {/* fix 7: email row stays mounted during loading for keyboard/a11y continuity */}
               {showEmailRow && (
-                <div className="mt-3 flex gap-2 pl-[3.75rem]">
+                <div className="mt-3 flex flex-wrap gap-2 pl-[3.75rem]">
                   <input
                     type="email"
                     required
@@ -355,7 +355,7 @@ export default function FeaturesTab({ initialFeatures, projectKey }: Props) {
                     onKeyDown={(e) => e.key === 'Enter' && submitVote(f.id)}
                     disabled={isLoading}
                     autoFocus
-                    className="min-w-0 flex-1 rounded-md border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-60"
+                    className="min-w-[6rem] flex-1 rounded-md border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-60"
                     aria-label="Email to verify vote"
                   />
                   {/* fix 8: focus-visible ring */}

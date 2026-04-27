@@ -124,13 +124,13 @@ export default function PublicPageClient({ changelog, roadmap, features, activeT
 
   return (
     <div className="mx-auto max-w-3xl px-4 py-8">
-      <nav aria-label="Project sections" className="mb-8 flex gap-1 border-b border-gray-200">
+      <nav aria-label="Project sections" className="mb-8 flex gap-1 overflow-x-auto border-b border-gray-200 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {TABS.map((t) => (
           <Link
             key={t}
             href={`?tab=${t}`}
             aria-current={activeTab === t ? 'page' : undefined}
-            className={`px-4 py-2 text-sm font-medium transition-colors ${
+            className={`flex-shrink-0 whitespace-nowrap px-4 py-2 text-sm font-medium transition-colors ${
               activeTab === t
                 ? 'border-b-2 border-blue-600 text-blue-600'
                 : 'text-gray-500 hover:text-gray-800'
@@ -155,7 +155,7 @@ export default function PublicPageClient({ changelog, roadmap, features, activeT
                 aria-controls={`changelog-content-${entry.id}`}
                 aria-label={entry.title}
               >
-                <div className="mb-1 flex items-center gap-2">
+                <div className="mb-1 flex flex-wrap items-center gap-2">
                   {entry.version && (
                     <span className="rounded bg-gray-100 px-2 py-0.5 text-xs font-mono text-gray-600">
                       {entry.version}
@@ -192,7 +192,7 @@ export default function PublicPageClient({ changelog, roadmap, features, activeT
       )}
 
       {activeTab === 'roadmap' && (
-        <div className="grid grid-cols-1 gap-6 sm:grid-cols-3">
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
           {ROADMAP_COLUMNS.map(({ status, label, headerStyle, cardBorder }) => {
             const items = knownRoadmapItems.filter((i) => i.status === status)
             return (
