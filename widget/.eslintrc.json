@@ -1,0 +1,14 @@
+{
+  "env": {
+    "browser": true,
+    "es2017": true
+  },
+  "rules": {
+    "no-implicit-globals": "error",
+    "no-undef": "error",
+    "no-var": "off"
+  },
+  "parserOptions": {
+    "ecmaVersion": 2017
+  }
+}
