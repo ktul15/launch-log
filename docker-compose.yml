@@ -1,0 +1,55 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5433:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-launchlog}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-launchlog}
+      POSTGRES_DB: ${POSTGRES_DB:-launchlog_dev}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - launchlog_dev
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-launchlog}
+    command: redis-server --requirepass ${REDIS_PASSWORD:-launchlog}
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - launchlog_dev
+    healthcheck:
+      # REDISCLI_AUTH avoids passing the password as a CLI arg (visible in ps aux)
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$REDIS_PASSWORD redis-cli ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+# When adding the backend service, include:
+#   depends_on:
+#     postgres:
+#       condition: service_healthy
+#     redis:
+#       condition: service_healthy
+
+networks:
+  launchlog_dev:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
