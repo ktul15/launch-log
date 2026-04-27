@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import Link from 'next/link'
 import RichTextViewer from '@/components/RichTextViewer'
 import FeaturesTab from './FeaturesTab'
@@ -73,9 +73,18 @@ export default function PublicPageClient({ changelog, roadmap, features, activeT
   // Only render items whose status matches a known column — guards against future backend enum additions.
   const knownRoadmapItems = roadmap.filter((i) => KNOWN_ROADMAP_STATUSES.has(i.status))
 
+  // issue-9-fix: abort all pending fetches on unmount to prevent setState on unmounted tree
+  useEffect(() => {
+    const refs = abortRefs.current
+    return () => { refs.forEach((c) => c.abort()); refs.clear() }
+  }, [])
+
   async function handleExpand(entryId: string) {
     if (expandedId === entryId) {
       setExpandedId(null)
+      // issue-8-fix: abort any in-flight fetch when user collapses the entry
+      abortRefs.current.get(entryId)?.abort()
+      abortRefs.current.delete(entryId)
       return
     }
     setExpandedId(entryId)
@@ -94,7 +103,8 @@ export default function PublicPageClient({ changelog, roadmap, features, activeT
       })
       if (res.ok) {
         const data = await res.json()
-        if (data.content) {
+        // issue-10-fix: ensure content is an object before passing to RichTextViewer
+        if (data.content !== null && typeof data.content === 'object') {
           setContentCache((c) => ({ ...c, [entryId]: data.content }))
         }
       } else {

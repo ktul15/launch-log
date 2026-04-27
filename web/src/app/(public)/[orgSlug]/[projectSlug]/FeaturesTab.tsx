@@ -73,22 +73,35 @@ export default function FeaturesTab({ initialFeatures, projectKey }: Props) {
   // fix 17: reject non-UUID project keys before building any fetch URLs
   const isValidKey = UUID_RE.test(projectKey)
 
+  // issue-3-fix: per-feature in-flight set — synchronous guard that React state batching can't race
+  const votingInFlightRef = useRef(new Set<string>())
+
   // fix 9: focus first input on open; return focus to trigger button on close
+  // hasOpenedRef prevents focus-steal on initial mount (effect fires once with showModal=false)
+  const hasOpenedRef = useRef(false)
   useEffect(() => {
     if (showModal) {
+      hasOpenedRef.current = true
       requestAnimationFrame(() => {
         document.getElementById('submit-title')?.focus()
       })
-    } else {
+    } else if (hasOpenedRef.current) {
       submitBtnRef.current?.focus()
     }
   }, [showModal])
+
+  // issue-2-fix: clear auto-close timer on unmount to prevent setState on unmounted tree
+  useEffect(() => {
+    return () => {
+      if (closeTimerRef.current) clearTimeout(closeTimerRef.current)
+    }
+  }, [])
 
   // fix 10: Escape closes modal; cleanup prevents stale listener after unmount
   useEffect(() => {
     if (!showModal) return
     function onKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') setShowModal(false)
+      if (e.key === 'Escape') closeModal()
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
@@ -117,8 +130,9 @@ export default function FeaturesTab({ initialFeatures, projectKey }: Props) {
   }
 
   async function submitVote(featureId: string) {
-    // fix 1: bail if a fetch is already in-flight for this feature
-    if ((voteStates[featureId]?.state ?? 'idle') === 'loading') return
+    // issue-3-fix: synchronous ref check — not subject to React state batching delays
+    if (votingInFlightRef.current.has(featureId)) return
+    votingInFlightRef.current.add(featureId)
 
     if (!isValidKey) {
       setVote(featureId, { state: 'error', message: 'Invalid project key.' })
@@ -140,7 +154,7 @@ export default function FeaturesTab({ initialFeatures, projectKey }: Props) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email }),
-        signal: timeoutSignal(10_000), // fix 16
+        signal: timeoutSignal(10_000),
       })
       if (res.ok) {
         setVote(featureId, { state: 'sent' })
@@ -162,6 +176,8 @@ export default function FeaturesTab({ initialFeatures, projectKey }: Props) {
       setVote(featureId, { state: 'error', message: String(data.message ?? 'Something went wrong.') })
     } catch {
       setVote(featureId, { state: 'error', message: 'Network error. Try again.' })
+    } finally {
+      votingInFlightRef.current.delete(featureId)
     }
   }
 
@@ -200,17 +216,23 @@ export default function FeaturesTab({ initialFeatures, projectKey }: Props) {
       })
       if (res.status === 201) {
         const raw: unknown = await res.json()
-        // fix 20: runtime shape check before trusting the response as PublicFeature
-        if (
+        // fix 20 + issue-6-fix: shape check — fall to error if response is malformed
+        // so the user knows to reload rather than seeing a false success
+        const isValidShape =
           typeof raw === 'object' &&
           raw !== null &&
           typeof (raw as Record<string, unknown>).id === 'string' &&
           typeof (raw as Record<string, unknown>).title === 'string' &&
           typeof (raw as Record<string, unknown>).voteCount === 'number'
-        ) {
-          setFeatures((prev) => [raw as PublicFeature, ...prev])
-          setPage(0)
+
+        if (!isValidShape) {
+          setSubmitError('Server returned an unexpected response. Please reload and try again.')
+          setSubmitState('error')
+          return
         }
+
+        setFeatures((prev) => [raw as PublicFeature, ...prev])
+        setPage(0)
         setSubmitState('success')
         setSubmitForm({ title: '', description: '', email: '' })
         // fix 3: cancel any prior timer so reopening the modal mid-countdown is safe
@@ -235,13 +257,22 @@ export default function FeaturesTab({ initialFeatures, projectKey }: Props) {
   }
 
   function openModal() {
-    if (closeTimerRef.current) { // fix 3
+    if (closeTimerRef.current) {
       clearTimeout(closeTimerRef.current)
       closeTimerRef.current = null
     }
     setSubmitState('idle')
     setSubmitError('')
     setShowModal(true)
+  }
+
+  // issue-5-fix: centralise close so timer is always cancelled, regardless of close path
+  function closeModal() {
+    if (closeTimerRef.current) {
+      clearTimeout(closeTimerRef.current)
+      closeTimerRef.current = null
+    }
+    setShowModal(false)
   }
 
   return (
@@ -401,7 +432,7 @@ export default function FeaturesTab({ initialFeatures, projectKey }: Props) {
           role="dialog"
           aria-modal="true"
           aria-labelledby="submit-modal-title"
-          onClick={(e) => { if (e.target === e.currentTarget) setShowModal(false) }}
+          onClick={(e) => { if (e.target === e.currentTarget) closeModal() }}
         >
           <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
             <div className="mb-4 flex items-center justify-between">
@@ -409,7 +440,7 @@ export default function FeaturesTab({ initialFeatures, projectKey }: Props) {
                 Submit a Feature Request
               </h2>
               <button
-                onClick={() => setShowModal(false)}
+                onClick={closeModal}
                 className="text-gray-400 hover:text-gray-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
                 aria-label="Close"
               >
@@ -480,7 +511,7 @@ export default function FeaturesTab({ initialFeatures, projectKey }: Props) {
                 <div className="flex justify-end gap-2 pt-1">
                   <button
                     type="button"
-                    onClick={() => setShowModal(false)}
+                    onClick={closeModal}
                     className="rounded-md border border-gray-200 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
                   >
                     Cancel

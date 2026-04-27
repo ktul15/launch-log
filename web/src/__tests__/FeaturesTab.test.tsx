@@ -288,6 +288,30 @@ describe('FeaturesTab — submit request modal', () => {
     expect(mockApiFetch).not.toHaveBeenCalled()
   })
 
+  it('shows error when 201 response has unexpected shape', async () => {
+    mockApiFetch.mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: () => Promise.resolve({ wrong: 'shape' }),
+    })
+    render(<FeaturesTab initialFeatures={[]} projectKey={PROJECT_KEY} />)
+    fireEvent.click(screen.getByRole('button', { name: /submit request/i }))
+    fireEvent.change(screen.getByLabelText(/title/i), { target: { value: 'Good Title' } })
+    fireEvent.change(screen.getByLabelText(/email/i), { target: { value: 'shape@test.com' } })
+    fireEvent.submit(screen.getByRole('dialog').querySelector('form')!)
+    await waitFor(() => expect(screen.getByText(/unexpected response/i)).toBeInTheDocument())
+    // modal stays open — user is not falsely told success
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+
+  it('does not steal focus on initial mount', () => {
+    // Verify that submitBtnRef.focus() is not called before modal has ever opened
+    const { container } = render(<FeaturesTab initialFeatures={[]} projectKey={PROJECT_KEY} />)
+    // document.activeElement should not be the Submit Request button on first render
+    const btn = container.querySelector('button[aria-haspopup="dialog"]')
+    expect(document.activeElement).not.toBe(btn)
+  })
+
   it('shows submitted title in success message', async () => {
     const newFeature = makeFeature({ id: 'feat-new', title: 'Unique Export XYZ', voteCount: 0 })
     mockApiFetch.mockResolvedValue({
