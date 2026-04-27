@@ -16,7 +16,7 @@ const BACKEND = process.env.BACKEND_URL ?? process.env.NEXT_PUBLIC_API_URL ?? 'h
 const jwtShape = /^[\w-]+\.[\w-]+\.[\w-]+$/
 
 function sanitizeToken(token: string): string {
-  return token.replace(/[^A-Za-z0-9\-_.]/g, '')
+  return token.replace(/[\r\n]/g, '')
 }
 
 interface Props {

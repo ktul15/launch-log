@@ -400,7 +400,7 @@ export default async function publicRoutes(fastify: FastifyInstance) {
 
       const project = await fastify.prisma.project.findUnique({
         where: { widgetKey: projectKey, isActive: true },
-        select: { name: true, description: true, org: { select: { name: true, plan: true } } },
+        select: { name: true, description: true, widgetSettings: true, org: { select: { name: true, plan: true } } },
       })
       if (!project) return reply.status(404).send({ message: 'Project not found' })
 
@@ -409,6 +409,7 @@ export default async function publicRoutes(fastify: FastifyInstance) {
         description: project.description,
         orgName: project.org.name,
         plan: project.org.plan,
+        widgetSettings: project.widgetSettings,
       })
     },
   )

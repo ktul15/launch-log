@@ -8,7 +8,7 @@ const jwtShape = /^[\w-]+\.[\w-]+\.[\w-]+$/
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 function sanitizeToken(token: string): string {
-  return token.replace(/[^A-Za-z0-9\-_.]/g, '')
+  return token.replace(/[\r\n]/g, '')
 }
 
 interface Props {

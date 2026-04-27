@@ -123,6 +123,8 @@ model Project {
   slug           String   @db.VarChar(100)
   description    String?
   widgetKey      String   @unique @default(uuid())
+  // Default is empty object — always parse via parseWidgetSettings() which applies field-by-field
+  // defaults rather than reading fields directly from the raw JSON.
   widgetSettings Json     @default("{}")
   themeSettings  Json     @default("{}")
   customDomain   String?

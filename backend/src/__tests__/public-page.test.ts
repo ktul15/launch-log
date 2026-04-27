@@ -476,4 +476,47 @@ describe('GET /api/v1/public/:projectKey/info', () => {
 
     expect(res.statusCode).toBe(404)
   })
+
+  it('returns widgetSettings in response', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'info-ws')
+    const { widgetKey } = await createProject(app, cookie, 'info-ws')
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/public/${widgetKey}/info`,
+    })
+
+    expect(res.statusCode).toBe(200)
+    const body = JSON.parse(res.body)
+    expect(body).toHaveProperty('widgetSettings')
+    expect(typeof body.widgetSettings).toBe('object')
+  })
+
+  it('returns updated widgetSettings after PATCH', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'info-ws-patch')
+    const { id, widgetKey } = await createProject(app, cookie, 'info-ws-patch')
+
+    const ws = {
+      showChangelog: true,
+      showRoadmap: false,
+      showFeatures: true,
+      buttonPosition: 'top-right',
+      primaryColor: '#abcdef',
+      backgroundColor: '#000000',
+    }
+    await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/projects/${id}`,
+      headers: { cookie },
+      payload: { widgetSettings: ws },
+    })
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/public/${widgetKey}/info`,
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body).widgetSettings).toEqual(ws)
+  })
 })

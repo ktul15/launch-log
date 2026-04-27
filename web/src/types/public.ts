@@ -23,11 +23,14 @@ export interface PublicRoadmapItem {
   displayOrder: number
 }
 
+import type { WidgetSettings } from './widget'
+
 export interface WidgetProject {
   name: string
   description: string | null
   orgName: string
   plan: string
+  widgetSettings: WidgetSettings
 }
 
 export interface PublicFeature {

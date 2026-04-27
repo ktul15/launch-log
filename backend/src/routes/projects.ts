@@ -36,6 +36,25 @@ const createProjectSchema = z.object({
   slug: slugSchema.optional(),
 })
 
+// IMPORTANT: widgetSettingsSchema and the WidgetSettings TypeScript type in
+// web/src/types/widget.ts must stay in sync. Adding a field to one requires
+// updating the other in the same change — the schema uses .strict() so unknown
+// keys are rejected, and saves always send the full object (no partial merges).
+const widgetSettingsSchema = z
+  .object({
+    showChangelog: z.boolean(),
+    showRoadmap: z.boolean(),
+    showFeatures: z.boolean(),
+    buttonPosition: z.enum(['bottom-left', 'bottom-right', 'top-left', 'top-right']),
+    primaryColor: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'primaryColor must be a 6-digit hex color'),
+    backgroundColor: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'backgroundColor must be a 6-digit hex color'),
+  })
+  .strict()
+  .refine(
+    (d) => d.showChangelog || d.showRoadmap || d.showFeatures,
+    { message: 'At least one tab must be enabled' },
+  )
+
 const updateProjectSchema = z
   .object({
     name: z
@@ -45,6 +64,7 @@ const updateProjectSchema = z
       .optional(),
     slug: slugSchema.optional(),
     description: z.string().max(500, 'Description must be at most 500 characters').nullable().optional(),
+    widgetSettings: widgetSettingsSchema.optional(),
   })
   .superRefine((data, ctx) => {
     if (Object.keys(data).length === 0) {
