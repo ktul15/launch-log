@@ -185,10 +185,10 @@ export default async function PublicProjectPage({ params, searchParams }: Props)
   return (
     <div className="min-h-screen bg-white">
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: safeJsonLd }} />
-      <header className="border-b border-gray-200 px-4 py-6">
+      <header className="border-b border-gray-200 px-4 py-4 sm:py-6">
         <div className="mx-auto max-w-3xl">
           <p className="text-xs font-medium uppercase tracking-wide text-gray-400">{project.orgName}</p>
-          <h1 className="mt-1 text-2xl font-bold text-gray-900">{project.name}</h1>
+          <h1 className="mt-1 text-xl font-bold text-gray-900 sm:text-2xl">{project.name}</h1>
           {project.description && (
             <p className="mt-1 text-sm text-gray-500">{project.description}</p>
           )}
