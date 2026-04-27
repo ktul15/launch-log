@@ -17,6 +17,10 @@ const VERIFY_VOTE_RATE_LIMIT = env.NODE_ENV === 'test' ? 100_000 : 30
 const EMAIL_VOTE_RATE_LIMIT = env.NODE_ENV === 'test' ? 100_000 : 3
 const FORTY_EIGHT_HOURS_MS = 48 * 60 * 60 * 1000
 
+const SUBSCRIBE_RATE_LIMIT = env.NODE_ENV === 'test' ? 100_000 : 5
+const VERIFY_SUBSCRIBE_RATE_LIMIT = env.NODE_ENV === 'test' ? 100_000 : 30
+const UNSUBSCRIBE_RATE_LIMIT = env.NODE_ENV === 'test' ? 100_000 : 30
+
 const FEATURE_SELECT_PUBLIC = {
   id: true,
   projectId: true,
@@ -65,6 +69,19 @@ const voteSchema = z
   .strict()
 
 const verifyVoteSchema = z
+  .object({ token: z.string().min(1, 'Token is required').max(VERIFY_TOKEN_MAX_LEN, 'Invalid token') })
+  .strict()
+
+const subscribeSchema = z
+  .object({
+    email: z
+      .string()
+      .email('Invalid email address')
+      .transform((s) => s.toLowerCase()),
+  })
+  .strict()
+
+const tokenQuerySchema = z
   .object({ token: z.string().min(1, 'Token is required').max(VERIFY_TOKEN_MAX_LEN, 'Invalid token') })
   .strict()
 
@@ -484,6 +501,143 @@ export default async function publicRoutes(fastify: FastifyInstance) {
       })
 
       return reply.send(features)
+    },
+  )
+
+  // POST /:projectKey/subscribe — subscribe email to project updates
+  fastify.post(
+    '/:projectKey/subscribe',
+    {
+      config: { rateLimit: { max: SUBSCRIBE_RATE_LIMIT, timeWindow: 3_600_000 } },
+    },
+    async (req, reply) => {
+      const { projectKey } = req.params as { projectKey: string }
+
+      if (projectKey.length > PROJECT_KEY_MAX_LEN) {
+        return reply.status(404).send({ message: 'Project not found' })
+      }
+
+      const parsed = subscribeSchema.safeParse(req.body)
+      if (!parsed.success) {
+        const messages = parsed.error.issues.map((i) => i.message).join(', ')
+        return reply.status(400).send({ message: messages })
+      }
+
+      const { email } = parsed.data
+
+      const project = await fastify.prisma.project.findUnique({
+        where: { widgetKey: projectKey, isActive: true },
+        select: { id: true },
+      })
+      if (!project) {
+        return reply.status(404).send({ message: 'Project not found' })
+      }
+
+      // Check for an existing subscriber record before upserting to decide the response status.
+      const existing = await fastify.prisma.subscriber.findUnique({
+        where: { projectId_email: { projectId: project.id, email } },
+        select: { id: true, verified: true },
+      })
+
+      if (existing?.verified) {
+        return reply.status(200).send({ status: 'already_subscribed' })
+      }
+
+      // Upsert — create new or leave existing unverified record in place (token preserved for resend).
+      const subscriber = await fastify.prisma.subscriber.upsert({
+        where: { projectId_email: { projectId: project.id, email } },
+        create: {
+          projectId: project.id,
+          email,
+          verified: false,
+          verificationToken: crypto.randomUUID(),
+        },
+        update: {},
+        select: { id: true },
+      })
+
+      try {
+        await fastify.notificationQueue.add('subscribe_verification', {
+          type: 'subscribe_verification',
+          referenceId: subscriber.id,
+          projectId: project.id,
+        })
+      } catch (err) {
+        req.log.error({ subscriberId: subscriber.id, err }, 'public: failed to enqueue subscribe_verification — subscriber exists but email will not be sent')
+      }
+
+      return reply.status(200).send({ status: 'verification_sent' })
+    },
+  )
+
+  // GET /verify-subscribe — verify subscriber email via token link
+  fastify.get(
+    '/verify-subscribe',
+    {
+      config: { rateLimit: { max: VERIFY_SUBSCRIBE_RATE_LIMIT, timeWindow: 3_600_000 } },
+    },
+    async (req, reply) => {
+      const parsed = tokenQuerySchema.safeParse(req.query)
+      if (!parsed.success) {
+        const messages = parsed.error.issues.map((i) => i.message).join(', ')
+        return reply.status(400).send({ message: messages })
+      }
+
+      const { token } = parsed.data
+
+      const subscriber = await fastify.prisma.subscriber.findUnique({
+        where: { verificationToken: token },
+        select: { id: true, verified: true },
+      })
+
+      if (!subscriber) {
+        return reply.status(400).send({ message: 'Invalid token' })
+      }
+
+      if (subscriber.verified) {
+        return reply.status(200).send({ verified: true })
+      }
+
+      // Atomic gate: WHERE verified = false ensures concurrent requests don't both "win".
+      // count === 0 means a concurrent request already verified — result is the same either way.
+      await fastify.prisma.subscriber.updateMany({
+        where: { id: subscriber.id, verified: false },
+        data: { verified: true },
+      })
+
+      return reply.status(200).send({ verified: true })
+    },
+  )
+
+  // GET /unsubscribe — remove subscriber by token (included in all notification emails)
+  fastify.get(
+    '/unsubscribe',
+    {
+      config: { rateLimit: { max: UNSUBSCRIBE_RATE_LIMIT, timeWindow: 3_600_000 } },
+    },
+    async (req, reply) => {
+      const parsed = tokenQuerySchema.safeParse(req.query)
+      if (!parsed.success) {
+        const messages = parsed.error.issues.map((i) => i.message).join(', ')
+        return reply.status(400).send({ message: messages })
+      }
+
+      const { token } = parsed.data
+
+      const subscriber = await fastify.prisma.subscriber.findUnique({
+        where: { verificationToken: token },
+        select: { id: true },
+      })
+
+      // Treat unknown token as already-unsubscribed — idempotent so email prefetch scanners
+      // (Gmail, Apple Mail) don't cause an error on the user's real click.
+      if (!subscriber) {
+        return reply.status(200).send({ unsubscribed: true })
+      }
+
+      await fastify.prisma.subscriber.delete({ where: { id: subscriber.id } })
+
+      return reply.status(200).send({ unsubscribed: true })
     },
   )
 }

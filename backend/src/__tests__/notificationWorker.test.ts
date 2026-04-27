@@ -1,8 +1,8 @@
-import { processChangelogPublishedJob, processFeatureShippedJob, processVoteVerificationJob, handleWorkerFailedEvent } from '../workers/notificationWorker'
+import { processChangelogPublishedJob, processFeatureShippedJob, processVoteVerificationJob, processSubscribeVerificationJob, handleWorkerFailedEvent } from '../workers/notificationWorker'
 import { NotificationJobData } from '../jobs/index'
 import { SendResult } from '../services/emailService'
 
-type SendFn = (opts: { to: string; entryTitle: string; changelogUrl: string }) => Promise<SendResult>
+type SendFn = (opts: { to: string; entryTitle: string; changelogUrl: string; unsubscribeUrl: string }) => Promise<SendResult>
 
 function makeJob(overrides: Partial<NotificationJobData> = {}): NotificationJobData {
   return {
@@ -26,7 +26,7 @@ function makeDeps(overrides: {
   })
 
   const subscriberFindMany = overrides.findMany ?? jest.fn().mockResolvedValue([
-    { id: 'sub-1', email: 'a@example.com' },
+    { id: 'sub-1', email: 'a@example.com', verificationToken: 'tok-sub-1' },
   ])
 
   const notificationLogFindMany = overrides.notificationLogFindMany ?? jest.fn().mockResolvedValue([])
@@ -185,6 +185,19 @@ describe('processChangelogPublishedJob', () => {
       expect.objectContaining({ changelogUrl: expect.stringContaining('/p/my-project/changelog') }),
     )
   })
+
+  it('includes per-subscriber unsubscribeUrl containing verificationToken', async () => {
+    const { prisma, log, sendEmail, mocks } = makeDeps()
+    await processChangelogPublishedJob(makeJob(), { prisma, log, sendEmail })
+
+    expect(mocks.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        unsubscribeUrl: expect.stringContaining('tok-sub-1'),
+      }),
+    )
+    const call = mocks.sendEmail.mock.calls[0][0] as { unsubscribeUrl: string }
+    expect(() => new URL(call.unsubscribeUrl)).not.toThrow()
+  })
 })
 
 describe('handleWorkerFailedEvent', () => {
@@ -231,7 +244,7 @@ describe('handleWorkerFailedEvent', () => {
   })
 })
 
-type ShippedSendFn = (opts: { to: string; itemTitle: string; roadmapUrl: string }) => Promise<SendResult>
+type ShippedSendFn = (opts: { to: string; itemTitle: string; roadmapUrl: string; unsubscribeUrl: string }) => Promise<SendResult>
 
 function makeShippedJob(overrides: Partial<NotificationJobData> = {}): NotificationJobData {
   return {
@@ -255,7 +268,7 @@ function makeShippedDeps(overrides: {
   })
 
   const subscriberFindMany = overrides.findMany ?? jest.fn().mockResolvedValue([
-    { id: 'sub-1', email: 'a@example.com' },
+    { id: 'sub-1', email: 'a@example.com', verificationToken: 'tok-sub-1' },
   ])
 
   const notificationLogFindMany = overrides.notificationLogFindMany ?? jest.fn().mockResolvedValue([])
@@ -398,6 +411,19 @@ describe('processFeatureShippedJob', () => {
     expect(mocks.sendEmail).toHaveBeenCalledWith(
       expect.objectContaining({ roadmapUrl: expect.stringContaining('/p/my-project/roadmap') }),
     )
+  })
+
+  it('includes per-subscriber unsubscribeUrl containing verificationToken', async () => {
+    const { prisma, log, sendEmail, mocks } = makeShippedDeps()
+    await processFeatureShippedJob(makeShippedJob(), { prisma, log, sendEmail })
+
+    expect(mocks.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        unsubscribeUrl: expect.stringContaining('tok-sub-1'),
+      }),
+    )
+    const call = mocks.sendEmail.mock.calls[0][0] as { unsubscribeUrl: string }
+    expect(() => new URL(call.unsubscribeUrl)).not.toThrow()
   })
 
   it('logs batch summary with correct counts', async () => {
@@ -549,5 +575,141 @@ describe('processVoteVerificationJob', () => {
     await expect(
       processVoteVerificationJob(makeVoteJob(), { prisma, log, sendEmail }),
     ).rejects.toThrow('vote verification email failed')
+  })
+})
+
+type SubVerifySendFn = (opts: { to: string; projectName: string; verifyUrl: string; unsubscribeUrl: string }) => Promise<SendResult>
+
+function makeSubVerifyJob(overrides: Partial<NotificationJobData> = {}): NotificationJobData {
+  return {
+    type: 'subscribe_verification',
+    referenceId: 'sub-uuid-1',
+    projectId: 'project-uuid-1',
+    ...overrides,
+  }
+}
+
+function makeSubVerifyDeps(overrides: {
+  subscriberFindFirst?: jest.Mock
+  logFindFirst?: jest.Mock
+  logCreate?: jest.Mock
+  sendEmail?: jest.Mock
+} = {}) {
+  const subscriberFindFirst = overrides.subscriberFindFirst ?? jest.fn().mockResolvedValue({
+    verified: false,
+    email: 'subscriber@example.com',
+    verificationToken: 'sub-token-abc',
+    project: { name: 'Acme App' },
+  })
+
+  const logFindFirst = overrides.logFindFirst ?? jest.fn().mockResolvedValue(null)
+  const logCreate = overrides.logCreate ?? jest.fn().mockResolvedValue({})
+
+  const sendEmail: jest.Mock<Promise<SendResult>> =
+    overrides.sendEmail ?? jest.fn().mockResolvedValue({ ok: true })
+
+  const prisma = {
+    subscriber: { findFirst: subscriberFindFirst },
+    notificationLog: { findFirst: logFindFirst, create: logCreate },
+  } as unknown as Parameters<typeof processSubscribeVerificationJob>[1]['prisma']
+
+  const log = {
+    warn: jest.fn(),
+    info: jest.fn(),
+    error: jest.fn(),
+  } as unknown as Parameters<typeof processSubscribeVerificationJob>[1]['log']
+
+  return { prisma, log, sendEmail: sendEmail as SubVerifySendFn, mocks: { subscriberFindFirst, logFindFirst, logCreate, sendEmail } }
+}
+
+describe('processSubscribeVerificationJob', () => {
+  it('returns early for non-subscribe_verification type', async () => {
+    const { prisma, log, sendEmail, mocks } = makeSubVerifyDeps()
+    await processSubscribeVerificationJob(makeSubVerifyJob({ type: 'changelog_published' }), { prisma, log, sendEmail })
+    expect(mocks.subscriberFindFirst).not.toHaveBeenCalled()
+  })
+
+  it('returns early + warns when subscriber not found', async () => {
+    const { prisma, log, sendEmail, mocks } = makeSubVerifyDeps({
+      subscriberFindFirst: jest.fn().mockResolvedValue(null),
+    })
+    await processSubscribeVerificationJob(makeSubVerifyJob(), { prisma, log, sendEmail })
+    expect(mocks.sendEmail).not.toHaveBeenCalled()
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ subscriberId: 'sub-uuid-1' }),
+      expect.stringContaining('not found'),
+    )
+  })
+
+  it('returns early + logs info when subscriber already verified', async () => {
+    const { prisma, log, sendEmail, mocks } = makeSubVerifyDeps({
+      subscriberFindFirst: jest.fn().mockResolvedValue({
+        verified: true,
+        email: 'subscriber@example.com',
+        verificationToken: 'sub-token-abc',
+        project: { name: 'Acme App' },
+      }),
+    })
+    await processSubscribeVerificationJob(makeSubVerifyJob(), { prisma, log, sendEmail })
+    expect(mocks.sendEmail).not.toHaveBeenCalled()
+    expect(log.info).toHaveBeenCalledWith(
+      expect.objectContaining({ subscriberId: 'sub-uuid-1' }),
+      expect.stringContaining('already verified'),
+    )
+  })
+
+  it('skips send when notificationLog entry already exists (dedup on retry)', async () => {
+    const { prisma, log, sendEmail, mocks } = makeSubVerifyDeps({
+      logFindFirst: jest.fn().mockResolvedValue({ id: 'log-uuid-1' }),
+    })
+    await processSubscribeVerificationJob(makeSubVerifyJob(), { prisma, log, sendEmail })
+    expect(mocks.sendEmail).not.toHaveBeenCalled()
+    expect(log.info).toHaveBeenCalledWith(
+      expect.objectContaining({ subscriberId: 'sub-uuid-1' }),
+      expect.stringContaining('already sent'),
+    )
+  })
+
+  it('sends email with correct to, projectName, verifyUrl, and unsubscribeUrl', async () => {
+    const { prisma, log, sendEmail, mocks } = makeSubVerifyDeps()
+    await processSubscribeVerificationJob(makeSubVerifyJob(), { prisma, log, sendEmail })
+    expect(mocks.sendEmail).toHaveBeenCalledTimes(1)
+    const call = mocks.sendEmail.mock.calls[0][0] as { to: string; projectName: string; verifyUrl: string; unsubscribeUrl: string }
+    expect(call.to).toBe('subscriber@example.com')
+    expect(call.projectName).toBe('Acme App')
+    expect(() => new URL(call.verifyUrl)).not.toThrow()
+    expect(call.verifyUrl).toContain('/verify/subscribe')
+    expect(call.verifyUrl).toContain('token=sub-token-abc')
+    expect(() => new URL(call.unsubscribeUrl)).not.toThrow()
+    expect(call.unsubscribeUrl).toContain('/unsubscribe')
+    expect(call.unsubscribeUrl).toContain('token=sub-token-abc')
+  })
+
+  it('creates notificationLog row after successful send', async () => {
+    const { prisma, log, sendEmail, mocks } = makeSubVerifyDeps()
+    await processSubscribeVerificationJob(makeSubVerifyJob(), { prisma, log, sendEmail })
+    expect(mocks.logCreate).toHaveBeenCalledWith({
+      data: { type: 'subscribe_verification', referenceId: 'sub-uuid-1' },
+    })
+  })
+
+  it('logs error when notificationLog.create fails after email sent (duplicate risk)', async () => {
+    const { prisma, log, sendEmail } = makeSubVerifyDeps({
+      logCreate: jest.fn().mockRejectedValue(new Error('DB deadlock')),
+    })
+    await processSubscribeVerificationJob(makeSubVerifyJob(), { prisma, log, sendEmail })
+    expect(log.error).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error) }),
+      expect.stringContaining('duplicate risk'),
+    )
+  })
+
+  it('throws when email send fails so BullMQ retries', async () => {
+    const { prisma, log, sendEmail } = makeSubVerifyDeps({
+      sendEmail: jest.fn().mockResolvedValue({ ok: false, error: 'SMTP timeout' }),
+    })
+    await expect(
+      processSubscribeVerificationJob(makeSubVerifyJob(), { prisma, log, sendEmail }),
+    ).rejects.toThrow('subscribe verification email failed')
   })
 })

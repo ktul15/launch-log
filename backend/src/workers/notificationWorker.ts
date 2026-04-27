@@ -2,13 +2,13 @@ import { Worker } from 'bullmq'
 import { PrismaClient } from '@prisma/client'
 import type { FastifyBaseLogger } from 'fastify'
 import { createBullMQConnection, NotificationJobData } from '../jobs/index'
-import { sendChangelogEmail, sendFeatureShippedEmail, sendVoteVerificationEmail, SendResult } from '../services/emailService'
+import { sendChangelogEmail, sendFeatureShippedEmail, sendVoteVerificationEmail, sendSubscribeVerificationEmail, SendResult } from '../services/emailService'
 import { env } from '../config/env'
 
 type ProcessDeps = {
   prisma: PrismaClient
   log: FastifyBaseLogger
-  sendEmail: (opts: { to: string; entryTitle: string; changelogUrl: string }) => Promise<SendResult>
+  sendEmail: (opts: { to: string; entryTitle: string; changelogUrl: string; unsubscribeUrl: string }) => Promise<SendResult>
 }
 
 // Exported separately so tests can invoke it without a real Redis Worker
@@ -38,7 +38,7 @@ export async function processChangelogPublishedJob(
 
   const subscribers = await prisma.subscriber.findMany({
     where: { projectId, verified: true },
-    select: { id: true, email: true },
+    select: { id: true, email: true, verificationToken: true },
   })
 
   if (subscribers.length === 0) return
@@ -64,10 +64,14 @@ export async function processChangelogPublishedJob(
 
   const results = await Promise.allSettled(
     pending.map(async (subscriber) => {
+      const unsubscribeUrl = new URL('/api/v1/public/unsubscribe', env.FRONTEND_URL)
+      unsubscribeUrl.searchParams.set('token', subscriber.verificationToken)
+
       const result = await sendEmail({
         to: subscriber.email,
         entryTitle: entry.title,
         changelogUrl,
+        unsubscribeUrl: unsubscribeUrl.toString(),
       })
 
       if (!result.ok) {
@@ -112,7 +116,7 @@ export async function processChangelogPublishedJob(
 type FeatureShippedDeps = {
   prisma: PrismaClient
   log: FastifyBaseLogger
-  sendEmail: (opts: { to: string; itemTitle: string; roadmapUrl: string }) => Promise<SendResult>
+  sendEmail: (opts: { to: string; itemTitle: string; roadmapUrl: string; unsubscribeUrl: string }) => Promise<SendResult>
 }
 
 export async function processFeatureShippedJob(
@@ -141,7 +145,7 @@ export async function processFeatureShippedJob(
 
   const subscribers = await prisma.subscriber.findMany({
     where: { projectId, verified: true },
-    select: { id: true, email: true },
+    select: { id: true, email: true, verificationToken: true },
   })
 
   if (subscribers.length === 0) return
@@ -164,10 +168,14 @@ export async function processFeatureShippedJob(
 
   const results = await Promise.allSettled(
     pending.map(async (subscriber) => {
+      const unsubscribeUrl = new URL('/api/v1/public/unsubscribe', env.FRONTEND_URL)
+      unsubscribeUrl.searchParams.set('token', subscriber.verificationToken)
+
       const result = await sendEmail({
         to: subscriber.email,
         itemTitle: item.title,
         roadmapUrl,
+        unsubscribeUrl: unsubscribeUrl.toString(),
       })
 
       if (!result.ok) {
@@ -276,6 +284,81 @@ export async function processVoteVerificationJob(
   }
 }
 
+type SubscribeVerificationDeps = {
+  prisma: PrismaClient
+  log: FastifyBaseLogger
+  sendEmail: (opts: { to: string; projectName: string; verifyUrl: string; unsubscribeUrl: string }) => Promise<SendResult>
+}
+
+export async function processSubscribeVerificationJob(
+  data: NotificationJobData,
+  deps: SubscribeVerificationDeps,
+): Promise<void> {
+  if (data.type !== 'subscribe_verification') return
+
+  const { referenceId: subscriberId, projectId } = data
+  const { prisma, log, sendEmail } = deps
+
+  const subscriber = await prisma.subscriber.findFirst({
+    where: { id: subscriberId, projectId },
+    select: {
+      verified: true,
+      email: true,
+      verificationToken: true,
+      project: { select: { name: true } },
+    },
+  })
+
+  if (!subscriber) {
+    log.warn({ subscriberId, projectId }, 'notification worker: subscriber not found, skipping')
+    return
+  }
+
+  if (subscriber.verified) {
+    log.info({ subscriberId }, 'notification worker: subscriber already verified, skipping')
+    return
+  }
+
+  // Dedup: skip if this job already sent a verification email (e.g. on a BullMQ retry after
+  // the email was delivered but the job completion acknowledgment was lost).
+  const existingLog = await prisma.notificationLog.findFirst({
+    where: { type: 'subscribe_verification', referenceId: subscriberId },
+    select: { id: true },
+  })
+  if (existingLog) {
+    log.info({ subscriberId }, 'notification worker: subscribe verification email already sent, skipping')
+    return
+  }
+
+  const verifyUrlObj = new URL('/verify/subscribe', env.FRONTEND_URL)
+  verifyUrlObj.searchParams.set('token', subscriber.verificationToken)
+
+  const unsubscribeUrlObj = new URL('/unsubscribe', env.FRONTEND_URL)
+  unsubscribeUrlObj.searchParams.set('token', subscriber.verificationToken)
+
+  const result = await sendEmail({
+    to: subscriber.email,
+    projectName: subscriber.project.name,
+    verifyUrl: verifyUrlObj.toString(),
+    unsubscribeUrl: unsubscribeUrlObj.toString(),
+  })
+
+  if (!result.ok) {
+    // Throw so BullMQ retries — a transient email failure should not silently drop the verification
+    throw new Error(`subscribe verification email failed: ${result.error}`)
+  }
+
+  // Write log row after send. If this fails, the email was sent but the dedup record is
+  // missing — the subscriber may receive a duplicate on retry. Log as error so it's visible in alerting.
+  try {
+    await prisma.notificationLog.create({
+      data: { type: 'subscribe_verification', referenceId: subscriberId },
+    })
+  } catch (err) {
+    log.error({ subscriberId, err }, 'notification worker: failed to create notificationLog after subscribe verification email sent — duplicate risk on retry')
+  }
+}
+
 // Exported for use in tests to assert failed-event behavior without a real Worker
 export function handleWorkerFailedEvent(
   job: { id?: string; attemptsMade: number; opts: { attempts?: number } } | undefined,
@@ -307,6 +390,9 @@ export function createNotificationWorker(
       }
       if (job.data.type === 'vote_verification') {
         return processVoteVerificationJob(job.data, { prisma, log, sendEmail: sendVoteVerificationEmail })
+      }
+      if (job.data.type === 'subscribe_verification') {
+        return processSubscribeVerificationJob(job.data, { prisma, log, sendEmail: sendSubscribeVerificationEmail })
       }
       log.warn({ type: job.data.type }, 'notification worker: unknown job type, skipping')
     },

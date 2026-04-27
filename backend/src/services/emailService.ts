@@ -5,12 +5,14 @@ export type SendChangelogEmailOptions = {
   to: string
   entryTitle: string
   changelogUrl: string
+  unsubscribeUrl: string
 }
 
 export type SendFeatureShippedEmailOptions = {
   to: string
   itemTitle: string
   roadmapUrl: string
+  unsubscribeUrl: string
 }
 
 export type SendResult = { ok: true } | { ok: false; error: string }
@@ -65,17 +67,19 @@ function escHtml(s: string): string {
 
 function buildHtml(opts: SendChangelogEmailOptions): string {
   const safeTitle = escHtml(opts.entryTitle)
-  // changelogUrl is built from env.FRONTEND_URL + project slug; escape for href attribute context
+  // changelogUrl and unsubscribeUrl are built from env.FRONTEND_URL + slugs; escape for href attribute context
   const safeUrl = escHtml(opts.changelogUrl)
+  const safeUnsubUrl = escHtml(opts.unsubscribeUrl)
   return [
     '<p>A new changelog entry has been published:</p>',
     `<p><strong>${safeTitle}</strong></p>`,
     `<p><a href="${safeUrl}">View the full changelog</a></p>`,
+    `<p style="font-size:12px;color:#888;"><a href="${safeUnsubUrl}">Unsubscribe</a></p>`,
   ].join('\n')
 }
 
 function buildText(opts: SendChangelogEmailOptions): string {
-  return `New changelog entry: ${opts.entryTitle}\n\nView it here: ${opts.changelogUrl}`
+  return `New changelog entry: ${opts.entryTitle}\n\nView it here: ${opts.changelogUrl}\n\nUnsubscribe: ${opts.unsubscribeUrl}`
 }
 
 export async function sendFeatureShippedEmail(opts: SendFeatureShippedEmailOptions): Promise<SendResult> {
@@ -100,15 +104,17 @@ export async function sendFeatureShippedEmail(opts: SendFeatureShippedEmailOptio
 function buildFeatureShippedHtml(opts: SendFeatureShippedEmailOptions): string {
   const safeTitle = escHtml(opts.itemTitle)
   const safeUrl = escHtml(opts.roadmapUrl)
+  const safeUnsubUrl = escHtml(opts.unsubscribeUrl)
   return [
     '<p>A roadmap item has shipped:</p>',
     `<p><strong>${safeTitle}</strong></p>`,
     `<p><a href="${safeUrl}">View the roadmap</a></p>`,
+    `<p style="font-size:12px;color:#888;"><a href="${safeUnsubUrl}">Unsubscribe</a></p>`,
   ].join('\n')
 }
 
 function buildFeatureShippedText(opts: SendFeatureShippedEmailOptions): string {
-  return `Roadmap item shipped: ${opts.itemTitle}\n\nView it here: ${opts.roadmapUrl}`
+  return `Roadmap item shipped: ${opts.itemTitle}\n\nView it here: ${opts.roadmapUrl}\n\nUnsubscribe: ${opts.unsubscribeUrl}`
 }
 
 export type SendVoteVerificationEmailOptions = {
@@ -149,4 +155,47 @@ function buildVoteVerificationHtml(opts: SendVoteVerificationEmailOptions): stri
 
 function buildVoteVerificationText(opts: SendVoteVerificationEmailOptions): string {
   return `You requested to vote for: ${stripNewlines(opts.featureTitle)}\n\nVerify your vote here: ${stripNewlines(opts.verifyUrl)}\n\nIf you did not submit this vote, you can ignore this email.`
+}
+
+export type SendSubscribeVerificationEmailOptions = {
+  to: string
+  projectName: string
+  verifyUrl: string
+  unsubscribeUrl: string
+}
+
+export async function sendSubscribeVerificationEmail(opts: SendSubscribeVerificationEmailOptions): Promise<SendResult> {
+  const client = getResendClient()
+  if (!client) {
+    return { ok: false, error: 'Resend not configured — RESEND_API_KEY missing' }
+  }
+  try {
+    await client.emails.send({
+      from: env.RESEND_FROM_EMAIL,
+      to: opts.to,
+      subject: `Confirm your subscription to ${stripNewlines(opts.projectName)}`,
+      html: buildSubscribeVerificationHtml(opts),
+      text: buildSubscribeVerificationText(opts),
+    })
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+function buildSubscribeVerificationHtml(opts: SendSubscribeVerificationEmailOptions): string {
+  const safeName = escHtml(opts.projectName)
+  const safeVerifyUrl = escHtml(opts.verifyUrl)
+  const safeUnsubUrl = escHtml(opts.unsubscribeUrl)
+  return [
+    `<p>You requested to subscribe to updates from <strong>${safeName}</strong>.</p>`,
+    `<p>Click the link below to confirm your subscription:</p>`,
+    `<p><a href="${safeVerifyUrl}">Confirm subscription</a></p>`,
+    '<p>If you did not request this, you can ignore this email.</p>',
+    `<p style="font-size:12px;color:#888;"><a href="${safeUnsubUrl}">Unsubscribe</a></p>`,
+  ].join('\n')
+}
+
+function buildSubscribeVerificationText(opts: SendSubscribeVerificationEmailOptions): string {
+  return `You requested to subscribe to updates from ${opts.projectName}.\n\nConfirm your subscription here: ${opts.verifyUrl}\n\nIf you did not request this, you can ignore this email.\n\nUnsubscribe: ${opts.unsubscribeUrl}`
 }

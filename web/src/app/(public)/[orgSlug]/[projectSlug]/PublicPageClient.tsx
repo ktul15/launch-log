@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from 'react'
 import Link from 'next/link'
 import RichTextViewer from '@/components/RichTextViewer'
 import FeaturesTab from './FeaturesTab'
+import SubscribeForm from './SubscribeForm'
 import { apiFetch } from '@/lib/api'
 import type { TipTapDoc } from '@/types/changelog'
 import type { PublicChangelogEntry, PublicFeature, PublicRoadmapItem } from '@/types/public'
@@ -227,6 +228,10 @@ export default function PublicPageClient({ changelog, roadmap, features, activeT
       {activeTab === 'features' && (
         <FeaturesTab initialFeatures={features} projectKey={projectKey} />
       )}
+
+      <div className="mt-12 border-t border-gray-200 pt-8">
+        <SubscribeForm projectKey={projectKey} />
+      </div>
     </div>
   )
 }
