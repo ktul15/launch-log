@@ -385,6 +385,34 @@ export default async function publicRoutes(fastify: FastifyInstance) {
     },
   )
 
+  // GET /:projectKey/info — project metadata for widget iframe
+  fastify.get(
+    '/:projectKey/info',
+    {
+      config: { rateLimit: { max: PAGE_RATE_LIMIT, timeWindow: 3_600_000 } },
+    },
+    async (req, reply) => {
+      const { projectKey } = req.params as { projectKey: string }
+
+      if (projectKey.length > PROJECT_KEY_MAX_LEN) {
+        return reply.status(404).send({ message: 'Project not found' })
+      }
+
+      const project = await fastify.prisma.project.findUnique({
+        where: { widgetKey: projectKey, isActive: true },
+        select: { name: true, description: true, org: { select: { name: true, plan: true } } },
+      })
+      if (!project) return reply.status(404).send({ message: 'Project not found' })
+
+      return reply.send({
+        name: project.name,
+        description: project.description,
+        orgName: project.org.name,
+        plan: project.org.plan,
+      })
+    },
+  )
+
   // GET /:projectKey/changelog — published entries for public page
   fastify.get(
     '/:projectKey/changelog',

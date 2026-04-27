@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
-import FeaturesTab from '@/app/(public)/[orgSlug]/[projectSlug]/FeaturesTab'
+import FeaturesTab from '@/components/FeaturesTab'
 import type { PublicFeature } from '@/types/public'
 
 jest.mock('@/lib/api', () => ({

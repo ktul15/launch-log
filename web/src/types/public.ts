@@ -23,6 +23,13 @@ export interface PublicRoadmapItem {
   displayOrder: number
 }
 
+export interface WidgetProject {
+  name: string
+  description: string | null
+  orgName: string
+  plan: string
+}
+
 export interface PublicFeature {
   id: string
   projectId: string

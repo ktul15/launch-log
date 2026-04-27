@@ -416,3 +416,64 @@ describe('GET /api/v1/public/:projectKey/features', () => {
     expect(res.statusCode).toBe(404)
   })
 })
+
+// ─── GET /api/v1/public/:projectKey/info ────────────────────────────────────
+
+describe('GET /api/v1/public/:projectKey/info', () => {
+  it('returns name, orgName, plan for active project', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'info-ok')
+    const { widgetKey } = await createProject(app, cookie, 'info-ok')
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/public/${widgetKey}/info`,
+    })
+
+    expect(res.statusCode).toBe(200)
+    const body = JSON.parse(res.body)
+    expect(body).toMatchObject({
+      name: expect.any(String),
+      orgName: expect.any(String),
+      plan: expect.any(String),
+    })
+    expect(['free', 'starter', 'pro']).toContain(body.plan)
+    // No internal IDs or org identifiers should be exposed
+    expect(body).not.toHaveProperty('id')
+    expect(body).not.toHaveProperty('widgetKey')
+    expect(body).not.toHaveProperty('orgId')
+  })
+
+  it('returns 404 for unknown project key', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/public/${crypto.randomUUID()}/info`,
+    })
+
+    expect(res.statusCode).toBe(404)
+  })
+
+  it('returns 404 for key exceeding max length', async () => {
+    const long = 'a'.repeat(65)
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/public/${long}/info`,
+    })
+
+    expect(res.statusCode).toBe(404)
+  })
+
+  it('returns 404 for inactive project', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'info-inactive')
+    const { id, widgetKey } = await createProject(app, cookie, 'info-inactive')
+
+    // Deactivate the project directly via Prisma
+    await prisma.project.update({ where: { id }, data: { isActive: false } })
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/public/${widgetKey}/info`,
+    })
+
+    expect(res.statusCode).toBe(404)
+  })
+})

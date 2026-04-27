@@ -150,7 +150,7 @@ export default function FeaturesTab({ initialFeatures, projectKey }: Props) {
 
     setVote(featureId, { state: 'loading' })
     try {
-      const res = await apiFetch(`/api/v1/public/${projectKey}/features/${featureId}/vote`, {
+      const res = await apiFetch(`/api/v1/public/${encodeURIComponent(projectKey)}/features/${encodeURIComponent(featureId)}/vote`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email }),
@@ -204,7 +204,7 @@ export default function FeaturesTab({ initialFeatures, projectKey }: Props) {
     successTitleRef.current = submitForm.title.trim() // fix 15: capture before reset
 
     try {
-      const res = await apiFetch(`/api/v1/public/${projectKey}/features`, {
+      const res = await apiFetch(`/api/v1/public/${encodeURIComponent(projectKey)}/features`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
