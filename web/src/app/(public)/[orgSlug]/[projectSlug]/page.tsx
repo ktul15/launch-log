@@ -19,6 +19,15 @@ const BACKEND = process.env.BACKEND_URL ?? 'http://localhost:3001'
 // the backend on every request, while staying reasonably fresh.
 const REVALIDATE_SECONDS = 60
 
+// Safe: if APP_URL is malformed (e.g. missing scheme), falls back rather than crashing at import time.
+const APP_ORIGIN = (() => {
+  try {
+    return new URL(process.env.APP_URL ?? 'http://localhost:3000').origin
+  } catch {
+    return 'http://localhost:3000'
+  }
+})()
+
 // AbortSignal.timeout must be called per-request, not as a module-level constant.
 // A module-level signal would expire 5s after server startup and abort all subsequent fetches.
 function fetchOpts() {
@@ -53,14 +62,31 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { orgSlug, projectSlug } = params
   try {
     const project = await resolveProject(orgSlug, projectSlug)
-    if (!project) return { title: 'Not Found — LaunchLog' }
+    if (!project) return { title: 'Not Found — LaunchLog', robots: { index: false } }
+    const title = `${project.name} — ${project.orgName}`
+    const description = project.description ?? `Changelog, roadmap, and feature requests for ${project.name}.`
+    const url = `${APP_ORIGIN}/${encodeURIComponent(orgSlug)}/${encodeURIComponent(projectSlug)}`
     return {
-      title: `${project.name} — ${project.orgName}`,
-      description: project.description ?? `Changelog, roadmap, and feature requests for ${project.name}.`,
+      title,
+      description,
+      openGraph: {
+        title,
+        description,
+        url,
+        siteName: 'LaunchLog',
+        type: 'website',
+        images: [{ url: '/og-default.png', width: 1200, height: 630, alt: title }],
+      },
+      twitter: {
+        card: 'summary_large_image',
+        title,
+        description,
+        images: ['/og-default.png'],
+      },
     }
   } catch (err) {
     console.error('[public page] generateMetadata failed:', err instanceof Error ? err.message : String(err))
-    return { title: 'LaunchLog' }
+    return { title: 'LaunchLog', robots: { index: false } }
   }
 }
 
@@ -124,8 +150,41 @@ export default async function PublicProjectPage({ params, searchParams }: Props)
       })
     : []
 
+  const pageUrl = `${APP_ORIGIN}/${encodeURIComponent(orgSlug)}/${encodeURIComponent(projectSlug)}`
+  const jsonLd = {
+    '@context': 'https://schema.org',
+    '@graph': [
+      {
+        '@type': 'SoftwareApplication',
+        name: project.name,
+        ...(project.description ? { description: project.description } : {}),
+        applicationCategory: 'BusinessApplication',
+        url: pageUrl,
+      },
+      {
+        '@type': 'BreadcrumbList',
+        itemListElement: [
+          {
+            '@type': 'ListItem',
+            position: 1,
+            name: project.orgName,
+            item: `${APP_ORIGIN}/${encodeURIComponent(orgSlug)}`,
+          },
+          { '@type': 'ListItem', position: 2, name: project.name, item: pageUrl },
+        ],
+      },
+    ],
+  }
+  // JSON.stringify is not HTML-safe: a string like `</script>` closes the tag early.
+  // Unicode-escaping < > & prevents the browser HTML parser from misreading the JSON.
+  const safeJsonLd = JSON.stringify(jsonLd)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026')
+
   return (
     <div className="min-h-screen bg-white">
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: safeJsonLd }} />
       <header className="border-b border-gray-200 px-4 py-6">
         <div className="mx-auto max-w-3xl">
           <p className="text-xs font-medium uppercase tracking-wide text-gray-400">{project.orgName}</p>
