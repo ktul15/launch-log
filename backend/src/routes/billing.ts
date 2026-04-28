@@ -32,6 +32,18 @@ function getPriceId(plan: 'starter' | 'pro', interval: 'monthly' | 'annual'): st
   return env.STRIPE_PRO_ANNUAL_PRICE_ID!
 }
 
+// Reverse map: Stripe price ID → internal plan name.
+// Returns null for unknown price IDs (e.g. one-off charges, legacy prices).
+function planFromPriceId(priceId: string): 'starter' | 'pro' | null {
+  const map: Record<string, 'starter' | 'pro'> = {
+    [env.STRIPE_STARTER_MONTHLY_PRICE_ID!]: 'starter',
+    [env.STRIPE_STARTER_ANNUAL_PRICE_ID!]:  'starter',
+    [env.STRIPE_PRO_MONTHLY_PRICE_ID!]:     'pro',
+    [env.STRIPE_PRO_ANNUAL_PRICE_ID!]:      'pro',
+  }
+  return map[priceId] ?? null
+}
+
 // Lazy singleton — created on first request so the Stripe SDK's internal HTTP
 // connection pool is reused across requests rather than rebuilt per call.
 let stripeInstance: Stripe | undefined
@@ -166,5 +178,86 @@ export default async function billingRoutes(fastify: FastifyInstance) {
 
       return reply.status(200).send({ url: session.url })
     },
+  })
+
+  // Webhook route runs in a child scope so the raw-body content type parser
+  // doesn't override the default JSON parser used by /checkout and /portal.
+  fastify.register(async (webhookScope) => {
+    // Parse application/json as a raw Buffer — Stripe signature verification
+    // requires the exact bytes that were signed, before any JSON parsing.
+    webhookScope.addContentTypeParser(
+      'application/json',
+      { parseAs: 'buffer' },
+      (_req, body, done) => { done(null, body) },
+    )
+
+    webhookScope.post('/webhook', {
+      handler: async (req, reply) => {
+        if (!env.STRIPE_WEBHOOK_SECRET || !env.STRIPE_SECRET_KEY) {
+          return reply.status(503).send({ message: 'Webhook not configured' })
+        }
+
+        const sig = req.headers['stripe-signature']
+        if (!sig || Array.isArray(sig)) {
+          return reply.status(400).send({ message: 'Missing Stripe-Signature header' })
+        }
+
+        stripeInstance ??= new Stripe(env.STRIPE_SECRET_KEY, { apiVersion: '2024-06-20' })
+        const stripe = stripeInstance
+
+        let event: Stripe.Event
+        try {
+          event = stripe.webhooks.constructEvent(req.body as Buffer, sig, env.STRIPE_WEBHOOK_SECRET)
+        } catch {
+          return reply.status(400).send({ message: 'Invalid signature' })
+        }
+
+        switch (event.type) {
+          case 'checkout.session.completed': {
+            // Only record the subscription ID — plan is synced by customer.subscription.updated,
+            // which Stripe fires immediately after. This avoids an extra subscriptions.retrieve
+            // call that would create a second independent failure point for the same payment.
+            const session = event.data.object as Stripe.Checkout.Session
+            if (session.mode !== 'subscription' || !session.subscription || !session.customer) break
+            await fastify.prisma.organization.updateMany({
+              where: { stripeCustomerId: session.customer as string },
+              data: { stripeSubscriptionId: session.subscription as string },
+            })
+            break
+          }
+
+          case 'customer.subscription.updated': {
+            const sub = event.data.object as Stripe.Subscription
+            if (!sub.items.data[0]) break
+            const plan = planFromPriceId(sub.items.data[0].price.id)
+            const active = ['active', 'trialing'].includes(sub.status)
+            await fastify.prisma.organization.updateMany({
+              where: { stripeCustomerId: sub.customer as string },
+              data: {
+                plan: active && plan ? plan : 'free',
+                stripeSubscriptionId: sub.id,
+              },
+            })
+            break
+          }
+
+          case 'customer.subscription.deleted': {
+            const sub = event.data.object as Stripe.Subscription
+            // Downgrade to free and clear the subscription ID. stripeCustomerId is retained
+            // so the portal lets the org resubscribe without creating a duplicate customer.
+            await fastify.prisma.organization.updateMany({
+              where: { stripeCustomerId: sub.customer as string },
+              data: { plan: 'free', stripeSubscriptionId: null },
+            })
+            break
+          }
+
+          default:
+            break
+        }
+
+        return reply.status(200).send({ received: true })
+      },
+    })
   })
 }
