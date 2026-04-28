@@ -57,6 +57,10 @@ const baseSchema = z.object({
   RESEND_FROM_EMAIL: z.string().email().default('notifications@updates.launchlog.app'),
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().regex(/^whsec_/, 'Must start with whsec_').optional(),
+  STRIPE_STARTER_MONTHLY_PRICE_ID: z.string().optional(),
+  STRIPE_STARTER_ANNUAL_PRICE_ID: z.string().optional(),
+  STRIPE_PRO_MONTHLY_PRICE_ID: z.string().optional(),
+  STRIPE_PRO_ANNUAL_PRICE_ID: z.string().optional(),
   R2_ACCESS_KEY_ID: z.string().optional(),
   R2_SECRET_ACCESS_KEY: z.string().optional(),
   R2_BUCKET: z.string().optional(),
@@ -83,19 +87,32 @@ export type Env = z.infer<typeof baseSchema>
 // but would cause obscure runtime errors in the service layer.
 const envSchema = baseSchema.superRefine((data, ctx) => {
   type EnvKey = keyof typeof data
-  const checkGroup = (keys: EnvKey[]) => {
+  const checkGroup = (keys: EnvKey[], label: string) => {
     const missing = keys.filter(k => data[k] === undefined)
     if (missing.length > 0 && missing.length < keys.length) {
       missing.forEach(k => ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: [k],
-        message: `Required when other ${String(k).split('_')[0]} variables are set`,
+        message: `Required when other ${label} variables are set`,
       }))
     }
   }
-  checkGroup(['R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET', 'R2_ENDPOINT', 'R2_PUBLIC_URL'])
-  checkGroup(['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'])
-  checkGroup(['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET'])
+  checkGroup(['R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET', 'R2_ENDPOINT', 'R2_PUBLIC_URL'], 'R2')
+  checkGroup(['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'], 'Google OAuth')
+  // Checkout group: key + price IDs must all be set together.
+  // Webhook secret is independent — only required by the billing/webhook route, not checkout.
+  checkGroup([
+    'STRIPE_SECRET_KEY',
+    'STRIPE_STARTER_MONTHLY_PRICE_ID', 'STRIPE_STARTER_ANNUAL_PRICE_ID',
+    'STRIPE_PRO_MONTHLY_PRICE_ID', 'STRIPE_PRO_ANNUAL_PRICE_ID',
+  ], 'Stripe checkout')
+  if (data.STRIPE_WEBHOOK_SECRET && !data.STRIPE_SECRET_KEY) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['STRIPE_SECRET_KEY'],
+      message: 'Required when STRIPE_WEBHOOK_SECRET is set',
+    })
+  }
 })
 
 const result = envSchema.safeParse(process.env)

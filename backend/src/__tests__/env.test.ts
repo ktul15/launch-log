@@ -21,6 +21,8 @@ describe('Environment config validation', () => {
     for (const key of [
       'RESEND_API_KEY',
       'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET',
+      'STRIPE_STARTER_MONTHLY_PRICE_ID', 'STRIPE_STARTER_ANNUAL_PRICE_ID',
+      'STRIPE_PRO_MONTHLY_PRICE_ID', 'STRIPE_PRO_ANNUAL_PRICE_ID',
       'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET', 'R2_ENDPOINT', 'R2_PUBLIC_URL',
       'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET',
     ]) {
@@ -129,6 +131,10 @@ describe('Environment config validation', () => {
     process.env.RESEND_API_KEY = 're_test_key_123'
     process.env.STRIPE_SECRET_KEY = 'sk_test_abc'
     process.env.STRIPE_WEBHOOK_SECRET = 'whsec_abc'
+    process.env.STRIPE_STARTER_MONTHLY_PRICE_ID = 'price_starter_monthly'
+    process.env.STRIPE_STARTER_ANNUAL_PRICE_ID = 'price_starter_annual'
+    process.env.STRIPE_PRO_MONTHLY_PRICE_ID = 'price_pro_monthly'
+    process.env.STRIPE_PRO_ANNUAL_PRICE_ID = 'price_pro_annual'
     process.env.R2_ACCESS_KEY_ID = 'r2-key'
     process.env.R2_SECRET_ACCESS_KEY = 'r2-secret'
     process.env.R2_BUCKET = 'my-bucket'
@@ -179,12 +185,59 @@ describe('Environment config validation', () => {
     mockExit.mockRestore()
   })
 
-  it('exits if partial Stripe config is set', () => {
+  it('exits if Stripe key set but price IDs missing', () => {
     setValidEnv()
     process.env.STRIPE_SECRET_KEY = 'sk_test_abc'
-    // STRIPE_WEBHOOK_SECRET absent
+    // price IDs absent — checkout group requires all five together
     const mockExit = jest.spyOn(process, 'exit').mockImplementation(() => { throw new Error('process.exit') })
     expect(() => require('../config/env')).toThrow()
     mockExit.mockRestore()
+  })
+
+  it('exits if price IDs set but STRIPE_SECRET_KEY absent', () => {
+    setValidEnv()
+    process.env.STRIPE_STARTER_MONTHLY_PRICE_ID = 'price_starter_monthly'
+    process.env.STRIPE_STARTER_ANNUAL_PRICE_ID = 'price_starter_annual'
+    process.env.STRIPE_PRO_MONTHLY_PRICE_ID = 'price_pro_monthly'
+    process.env.STRIPE_PRO_ANNUAL_PRICE_ID = 'price_pro_annual'
+    const mockExit = jest.spyOn(process, 'exit').mockImplementation(() => { throw new Error('process.exit') })
+    expect(() => require('../config/env')).toThrow()
+    mockExit.mockRestore()
+  })
+
+  it('exits if STRIPE_WEBHOOK_SECRET set without STRIPE_SECRET_KEY', () => {
+    setValidEnv()
+    process.env.STRIPE_WEBHOOK_SECRET = 'whsec_abc'
+    const mockExit = jest.spyOn(process, 'exit').mockImplementation(() => { throw new Error('process.exit') })
+    expect(() => require('../config/env')).toThrow()
+    mockExit.mockRestore()
+  })
+
+  it('accepts key and price IDs without webhook (normal bootstrap order)', () => {
+    setValidEnv()
+    process.env.STRIPE_SECRET_KEY = 'sk_test_abc'
+    process.env.STRIPE_STARTER_MONTHLY_PRICE_ID = 'price_starter_monthly'
+    process.env.STRIPE_STARTER_ANNUAL_PRICE_ID = 'price_starter_annual'
+    process.env.STRIPE_PRO_MONTHLY_PRICE_ID = 'price_pro_monthly'
+    process.env.STRIPE_PRO_ANNUAL_PRICE_ID = 'price_pro_annual'
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { env } = require('../config/env')
+    expect(env.STRIPE_SECRET_KEY).toBe('sk_test_abc')
+    expect(env.STRIPE_WEBHOOK_SECRET).toBeUndefined()
+  })
+
+  it('accepts all six Stripe vars set together', () => {
+    setValidEnv()
+    process.env.STRIPE_SECRET_KEY = 'sk_test_abc'
+    process.env.STRIPE_WEBHOOK_SECRET = 'whsec_abc'
+    process.env.STRIPE_STARTER_MONTHLY_PRICE_ID = 'price_starter_monthly'
+    process.env.STRIPE_STARTER_ANNUAL_PRICE_ID = 'price_starter_annual'
+    process.env.STRIPE_PRO_MONTHLY_PRICE_ID = 'price_pro_monthly'
+    process.env.STRIPE_PRO_ANNUAL_PRICE_ID = 'price_pro_annual'
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { env } = require('../config/env')
+    expect(env.STRIPE_SECRET_KEY).toBe('sk_test_abc')
+    expect(env.STRIPE_STARTER_MONTHLY_PRICE_ID).toBe('price_starter_monthly')
+    expect(env.STRIPE_PRO_ANNUAL_PRICE_ID).toBe('price_pro_annual')
   })
 })
