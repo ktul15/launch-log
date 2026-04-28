@@ -6,12 +6,22 @@ import { env } from '../config/env'
 
 const BILLING_RATE_LIMIT = env.NODE_ENV === 'test' ? 100_000 : 10
 
+const portalSchema = z.object({
+  return_url: z.string().url('return_url must be a valid URL'),
+})
+
 const checkoutSchema = z.object({
   plan: z.enum(['starter', 'pro'], { required_error: 'plan is required' }),
   interval: z.enum(['monthly', 'annual']).default('annual'),
   success_url: z.string().url('success_url must be a valid URL'),
   cancel_url: z.string().url('cancel_url must be a valid URL'),
 })
+
+// Compares URL origins rather than using startsWith, which is vulnerable to
+// subdomain prefix bypass (e.g. "http://app.com.evil.com/" starts with "http://app.com").
+function isSameOrigin(url: string, base: string): boolean {
+  return new URL(url).origin === new URL(base).origin
+}
 
 // env.ts enforces all-or-nothing for Stripe checkout vars — all four price IDs
 // are present whenever STRIPE_SECRET_KEY is set, so non-null assertions are safe.
@@ -46,8 +56,7 @@ export default async function billingRoutes(fastify: FastifyInstance) {
       }
       const { plan, interval, success_url, cancel_url } = parsed.data
 
-      const { origin } = new URL(env.FRONTEND_URL)
-      if (!success_url.startsWith(origin) || !cancel_url.startsWith(origin)) {
+      if (!isSameOrigin(success_url, env.FRONTEND_URL) || !isSameOrigin(cancel_url, env.FRONTEND_URL)) {
         return reply.status(422).send({ message: 'Redirect URLs must be on the application domain' })
       }
 
@@ -100,7 +109,62 @@ export default async function billingRoutes(fastify: FastifyInstance) {
         throw new Error('No checkout URL returned from Stripe')
       }
 
-      return reply.status(201).send({ url: session.url })
+      return reply.status(200).send({ url: session.url })
+    },
+  })
+
+  fastify.post('/portal', {
+    onRequest: [authenticate],
+    config: { rateLimit: { max: BILLING_RATE_LIMIT, timeWindow: 60_000 } },
+    handler: async (req, reply) => {
+      if (!env.STRIPE_SECRET_KEY) {
+        return reply.status(503).send({ message: 'Billing not configured' })
+      }
+
+      const { orgId, role } = req.user
+      if (role !== 'owner') {
+        return reply.status(403).send({ message: 'Only organisation owners can manage billing' })
+      }
+
+      const parsed = portalSchema.safeParse(req.body)
+      if (!parsed.success) {
+        return reply.status(422).send({ message: parsed.error.issues.map(i => i.message).join(', ') })
+      }
+      const { return_url } = parsed.data
+
+      if (!isSameOrigin(return_url, env.FRONTEND_URL)) {
+        return reply.status(422).send({ message: 'Redirect URLs must be on the application domain' })
+      }
+
+      const org = await fastify.prisma.organization.findUnique({
+        where: { id: orgId },
+        select: { id: true, stripeCustomerId: true },
+      })
+      if (!org) {
+        return reply.status(404).send({ message: 'Organisation not found' })
+      }
+
+      if (!org.stripeCustomerId) {
+        // Free orgs with no prior Stripe customer have nothing to manage in the portal.
+        // Orgs that cancelled (plan downgraded to free by webhook but stripeCustomerId retained)
+        // are intentionally allowed through — the portal lets them resubscribe, and the
+        // subscription.created webhook will update org.plan on completion.
+        return reply.status(422).send({ message: 'Organisation has no billing account' })
+      }
+
+      stripeInstance ??= new Stripe(env.STRIPE_SECRET_KEY, { apiVersion: '2024-06-20' })
+      const stripe = stripeInstance
+
+      const session = await stripe.billingPortal.sessions.create({
+        customer: org.stripeCustomerId,
+        return_url,
+      })
+
+      if (!session.url) {
+        throw new Error('No portal URL returned from Stripe')
+      }
+
+      return reply.status(200).send({ url: session.url })
     },
   })
 }
