@@ -11,7 +11,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await app.register(import('./roadmap'), { prefix: '/api/v1/projects' })
   await app.register(import('./features'), { prefix: '/api/v1/projects' })
   await app.register(import('./public'), { prefix: '/api/v1/public' })
-  // await app.register(import('./billing'), { prefix: '/api/v1/billing' })
+  await app.register(import('./billing'), { prefix: '/api/v1/billing' })
 
   app.get('/api/v1', async () => ({ version: '1.0.0', status: 'ok' }))
 }
