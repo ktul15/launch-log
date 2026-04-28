@@ -3,6 +3,7 @@ import Stripe from 'stripe'
 import { z } from 'zod'
 import { authenticate } from '../middleware/authenticate'
 import { env } from '../config/env'
+import { PLAN_LIMITS } from '../utils/planLimits'
 
 const BILLING_RATE_LIMIT = env.NODE_ENV === 'test' ? 100_000 : 10
 
@@ -177,6 +178,47 @@ export default async function billingRoutes(fastify: FastifyInstance) {
       }
 
       return reply.status(200).send({ url: session.url })
+    },
+  })
+
+  fastify.get('/', {
+    onRequest: [authenticate],
+    config: { rateLimit: { max: BILLING_RATE_LIMIT, timeWindow: 60_000 } },
+    handler: async (req, reply) => {
+      const { orgId } = req.user
+
+      const org = await fastify.prisma.organization.findUnique({
+        where: { id: orgId },
+        select: {
+          plan: true,
+          stripeSubscriptionId: true,
+          _count: { select: { projects: { where: { isActive: true } } } },
+        },
+      })
+      if (!org) {
+        return reply.status(404).send({ message: 'Organisation not found' })
+      }
+
+      const projectCount = org._count.projects
+      const rawLimit = PLAN_LIMITS.projects[org.plan]
+      const projectLimit = rawLimit === Infinity ? null : rawLimit
+
+      let nextBillingDate: string | null = null
+      if (org.stripeSubscriptionId && env.STRIPE_SECRET_KEY) {
+        try {
+          stripeInstance ??= new Stripe(env.STRIPE_SECRET_KEY, { apiVersion: '2024-06-20' })
+          const sub = await stripeInstance.subscriptions.retrieve(org.stripeSubscriptionId)
+          // Only return a date for subscriptions that will actually renew.
+          // cancel_at_period_end=true means the period end is a cancellation date, not a billing date.
+          if ((sub.status === 'active' || sub.status === 'trialing') && !sub.cancel_at_period_end) {
+            nextBillingDate = new Date(sub.current_period_end * 1000).toISOString()
+          }
+        } catch {
+          // Stale subscription ID (e.g. deleted in Stripe without webhook) — degrade gracefully.
+        }
+      }
+
+      return reply.send({ plan: org.plan, projectCount, projectLimit, nextBillingDate })
     },
   })
 
