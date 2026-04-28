@@ -8,6 +8,8 @@ import { apiFetch } from '@/lib/api'
 import type { TipTapDoc } from '@/types/changelog'
 import type { WidgetProject, PublicChangelogEntry, PublicFeature, PublicRoadmapItem } from '@/types/public'
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'
+
 type Tab = 'changelog' | 'roadmap' | 'features'
 
 const TAB_LABELS: Record<Tab, string> = {
@@ -79,6 +81,9 @@ export default function WidgetClient({ project, changelog, roadmap, features, pr
   // Per-entry error set — mirrors loadingIds pattern so concurrent expands don't clobber each other.
   const [errorIds, setErrorIds] = useState<Set<string>>(new Set())
   const abortRefs = useRef(new Map<string, AbortController>())
+  // Prevents double-fire in React StrictMode (mount → unmount → remount). Ref persists
+  // through the unmount so the remount sees true and skips the second fetch.
+  const impressionFired = useRef(false)
 
   const knownRoadmapItems = roadmap.filter((i) => KNOWN_ROADMAP_STATUSES.has(i.status))
 
@@ -86,6 +91,16 @@ export default function WidgetClient({ project, changelog, roadmap, features, pr
     const refs = abortRefs.current
     return () => { refs.forEach((c) => c.abort()); refs.clear() }
   }, [])
+
+  useEffect(() => {
+    if (impressionFired.current) return
+    impressionFired.current = true
+    fetch(`${API_BASE}/api/v1/public/${encodeURIComponent(projectKey)}/events`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'widget_impression' }),
+    }).catch(() => {})
+  }, [projectKey])
 
   async function handleExpand(entryId: string) {
     if (expandedId === entryId) {
@@ -323,6 +338,15 @@ export default function WidgetClient({ project, changelog, roadmap, features, pr
             target="_blank"
             rel="noopener noreferrer"
             className="text-xs text-gray-400 hover:text-gray-600"
+            onClick={() => {
+              const url = `${API_BASE}/api/v1/public/${encodeURIComponent(projectKey)}/events`
+              const payload = JSON.stringify({ type: 'powered_by_click' })
+              if (navigator.sendBeacon) {
+                navigator.sendBeacon(url, new Blob([payload], { type: 'application/json' }))
+              } else {
+                fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload }).catch(() => {})
+              }
+            }}
           >
             Powered by LaunchLog
           </a>

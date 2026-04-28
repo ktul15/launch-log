@@ -20,6 +20,9 @@ const FORTY_EIGHT_HOURS_MS = 48 * 60 * 60 * 1000
 const SUBSCRIBE_RATE_LIMIT = env.NODE_ENV === 'test' ? 100_000 : 5
 const VERIFY_SUBSCRIBE_RATE_LIMIT = env.NODE_ENV === 'test' ? 100_000 : 30
 const UNSUBSCRIBE_RATE_LIMIT = env.NODE_ENV === 'test' ? 100_000 : 30
+// Analytics events are browser-origin (real user IPs, not shared SSR IP).
+// 60/hour accommodates aggressive reloading while blocking bulk DB writes.
+const ANALYTICS_RATE_LIMIT = env.NODE_ENV === 'test' ? 100_000 : 60
 
 const FEATURE_SELECT_PUBLIC = {
   id: true,
@@ -83,6 +86,19 @@ const subscribeSchema = z
 
 const tokenQuerySchema = z
   .object({ token: z.string().min(1, 'Token is required').max(VERIFY_TOKEN_MAX_LEN, 'Invalid token') })
+  .strict()
+
+const analyticsEventSchema = z
+  .object({
+    type: z.enum(['widget_impression', 'powered_by_click']),
+    metadata: z
+      .record(
+        z.string().max(64),
+        z.union([z.string().max(256), z.number(), z.boolean()]),
+      )
+      .refine((obj) => Object.keys(obj).length <= 10, { message: 'Too many metadata keys' })
+      .optional(),
+  })
   .strict()
 
 // HMAC-SHA256 with the server JWT secret — one-way and not reversible without the key.
@@ -635,6 +651,46 @@ export default async function publicRoutes(fastify: FastifyInstance) {
       })
 
       return reply.status(200).send({ verified: true })
+    },
+  )
+
+  // POST /:projectKey/events — fire-and-forget analytics (widget_impression, powered_by_click)
+  fastify.post(
+    '/:projectKey/events',
+    { config: { rateLimit: { max: ANALYTICS_RATE_LIMIT, timeWindow: 3_600_000 } } },
+    async (req, reply) => {
+      const { projectKey } = req.params as { projectKey: string }
+
+      if (projectKey.length > PROJECT_KEY_MAX_LEN) {
+        return reply.status(404).send({ message: 'Project not found' })
+      }
+
+      const parsed = analyticsEventSchema.safeParse(req.body)
+      if (!parsed.success) {
+        const messages = parsed.error.issues.map((i) => i.message).join(', ')
+        return reply.status(400).send({ message: messages })
+      }
+
+      const { type, metadata } = parsed.data
+
+      const project = await fastify.prisma.project.findUnique({
+        where: { widgetKey: projectKey, isActive: true },
+        select: { id: true },
+      })
+      if (!project) {
+        return reply.status(404).send({ message: 'Project not found' })
+      }
+
+      await fastify.prisma.analyticsEvent.create({
+        data: {
+          projectId: project.id,
+          type,
+          metadata: (metadata ?? {}) as Prisma.InputJsonObject,
+          ipHash: hashIp(req.ip),
+        },
+      })
+
+      return reply.status(204).send()
     },
   )
 
