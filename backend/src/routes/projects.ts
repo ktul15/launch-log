@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { Prisma } from '@prisma/client'
 import { PrismaClientKnownRequestError } from '@prisma/client/runtime/library'
 import { authenticate } from '../middleware/authenticate'
+import { planLimitCheck } from '../middleware/planLimit'
 import { env } from '../config/env'
 import { toSlug } from '../utils/slug'
 import { assertPlanLimit, PlanLimitExceededError } from '../utils/planLimits'
@@ -90,7 +91,8 @@ export default async function projectRoutes(fastify: FastifyInstance) {
   fastify.post(
     '/',
     {
-      onRequest: [authenticate],
+      // planLimitCheck is a fast-fail only; assertPlanLimit inside the transaction is the atomic guard.
+      onRequest: [authenticate, planLimitCheck('projects')],
       config: { rateLimit: { max: PROJECT_MUTATE_RATE_LIMIT, timeWindow: 60_000 } },
     },
     async (req, reply) => {
@@ -140,7 +142,7 @@ export default async function projectRoutes(fastify: FastifyInstance) {
           return reply.status(201).send(project)
         } catch (err) {
           if (err instanceof PlanLimitExceededError) {
-            return reply.status(403).send({ message: 'Project limit reached for your plan' })
+            return reply.status(403).send({ error: 'PLAN_LIMIT_REACHED', resource: 'projects' })
           }
           if (err instanceof Error && !(err instanceof PrismaClientKnownRequestError)) {
             if (err.message === TXN_ERR.NOT_FOUND) {

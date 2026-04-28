@@ -285,7 +285,7 @@ describe('POST /api/v1/projects', () => {
     })
 
     expect(second.statusCode).toBe(403)
-    expect(JSON.parse(second.body).message).toContain('Project limit reached')
+    expect(JSON.parse(second.body).error).toBe('PLAN_LIMIT_REACHED')
   })
 
   it('allows project creation after soft-deleting the only project (isActive filter)', async () => {
@@ -332,7 +332,7 @@ describe('POST /api/v1/projects', () => {
       payload: { name: 'Over Limit', slug: testSlug('starter-limit-4') },
     })
     expect(fourth.statusCode).toBe(403)
-    expect(JSON.parse(fourth.body).message).toContain('Project limit reached')
+    expect(JSON.parse(fourth.body).error).toBe('PLAN_LIMIT_REACHED')
   })
 
   it('never blocks project creation for pro plan', async () => {
