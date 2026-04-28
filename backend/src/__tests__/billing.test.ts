@@ -1114,3 +1114,196 @@ describe('POST /api/v1/billing/webhook — customer.subscription.deleted', () =>
     expect(org?.stripeSubscriptionId).toBeNull()
   })
 })
+
+// ─── GET /api/v1/billing ─────────────────────────────────────────────────────
+
+describe('GET /api/v1/billing', () => {
+  it('returns 401 for unauthenticated request', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/v1/billing' })
+    expect(res.statusCode).toBe(401)
+  })
+
+  it('returns 200 with plan/usage for owner (no subscription → nextBillingDate null)', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'get-owner')
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/billing',
+      headers: { cookie },
+    })
+
+    expect(res.statusCode).toBe(200)
+    const body = JSON.parse(res.body)
+    expect(body.plan).toBe('free')
+    expect(body.projectCount).toBe(0)
+    expect(body.projectLimit).toBe(1)
+    expect(body.nextBillingDate).toBeNull()
+    expect(mockSubscriptionsRetrieve).not.toHaveBeenCalled()
+  })
+
+  it('returns 200 for editor role (read-only access allowed)', async () => {
+    const { orgId } = await registerAndGetCookie(app, 'get-editor-org')
+    const editorCookie = await createEditorCookie(app, orgId, 'get-editor-user')
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/billing',
+      headers: { cookie: editorCookie },
+    })
+
+    expect(res.statusCode).toBe(200)
+    const body = JSON.parse(res.body)
+    expect(body.plan).toBe('free')
+  })
+
+  it('returns projectLimit null for pro plan (unlimited)', async () => {
+    const { cookie, orgId } = await registerAndGetCookie(app, 'get-pro-limit')
+    await prisma.organization.update({ where: { id: orgId }, data: { plan: 'pro' } })
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/billing',
+      headers: { cookie },
+    })
+
+    expect(res.statusCode).toBe(200)
+    const body = JSON.parse(res.body)
+    expect(body.projectLimit).toBeNull()
+  })
+
+  it('fetches nextBillingDate from Stripe when subscription exists', async () => {
+    const { cookie, orgId } = await registerAndGetCookie(app, 'get-sub-date')
+    await prisma.organization.update({
+      where: { id: orgId },
+      data: {
+        plan: 'starter',
+        stripeCustomerId: 'cus_date_test',
+        stripeSubscriptionId: 'sub_date_test',
+      },
+    })
+    const periodEnd = Math.floor(new Date('2026-06-01').getTime() / 1000)
+    mockSubscriptionsRetrieve.mockResolvedValue({ current_period_end: periodEnd, status: 'active', cancel_at_period_end: false })
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/billing',
+      headers: { cookie },
+    })
+
+    expect(res.statusCode).toBe(200)
+    const body = JSON.parse(res.body)
+    expect(body.nextBillingDate).toBe(new Date(periodEnd * 1000).toISOString())
+    expect(mockSubscriptionsRetrieve).toHaveBeenCalledWith('sub_date_test')
+  })
+
+  it('returns correct projectLimit for starter plan', async () => {
+    const { cookie, orgId } = await registerAndGetCookie(app, 'get-starter-limit')
+    await prisma.organization.update({ where: { id: orgId }, data: { plan: 'starter' } })
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/billing',
+      headers: { cookie },
+    })
+
+    expect(res.statusCode).toBe(200)
+    const body = JSON.parse(res.body)
+    expect(body.projectLimit).toBe(3)
+  })
+
+  it('returns nextBillingDate null and 200 when Stripe subscription retrieve throws', async () => {
+    const { cookie, orgId } = await registerAndGetCookie(app, 'get-stale-sub')
+    await prisma.organization.update({
+      where: { id: orgId },
+      data: { plan: 'starter', stripeSubscriptionId: 'sub_stale_deleted' },
+    })
+    mockSubscriptionsRetrieve.mockRejectedValue(Object.assign(new Error('No such subscription'), { type: 'StripeInvalidRequestError', statusCode: 404 }))
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/billing',
+      headers: { cookie },
+    })
+
+    expect(res.statusCode).toBe(200)
+    const body = JSON.parse(res.body)
+    expect(body.nextBillingDate).toBeNull()
+  })
+
+  it('returns nextBillingDate null when subscription is cancel_at_period_end', async () => {
+    const { cookie, orgId } = await registerAndGetCookie(app, 'get-cancel-eop')
+    await prisma.organization.update({
+      where: { id: orgId },
+      data: { plan: 'starter', stripeSubscriptionId: 'sub_cancel_eop' },
+    })
+    const periodEnd = Math.floor(new Date('2026-07-01').getTime() / 1000)
+    mockSubscriptionsRetrieve.mockResolvedValue({ current_period_end: periodEnd, status: 'active', cancel_at_period_end: true })
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/billing',
+      headers: { cookie },
+    })
+
+    expect(res.statusCode).toBe(200)
+    const body = JSON.parse(res.body)
+    expect(body.nextBillingDate).toBeNull()
+  })
+
+  it('returns nextBillingDate null when STRIPE_SECRET_KEY absent even if subscription ID exists', async () => {
+    const savedKey = env.STRIPE_SECRET_KEY
+    Object.assign(env, { STRIPE_SECRET_KEY: undefined })
+
+    const { cookie, orgId } = await registerAndGetCookie(app, 'get-no-key')
+    await prisma.organization.update({
+      where: { id: orgId },
+      data: { plan: 'starter', stripeSubscriptionId: 'sub_no_key' },
+    })
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/billing',
+      headers: { cookie },
+    })
+
+    Object.assign(env, { STRIPE_SECRET_KEY: savedKey })
+
+    expect(res.statusCode).toBe(200)
+    const body = JSON.parse(res.body)
+    expect(body.nextBillingDate).toBeNull()
+    expect(mockSubscriptionsRetrieve).not.toHaveBeenCalled()
+  })
+
+  it('excludes inactive projects from projectCount', async () => {
+    const { cookie, orgId } = await registerAndGetCookie(app, 'get-inactive-proj')
+
+    await prisma.project.create({
+      data: {
+        orgId,
+        name: 'Active Project',
+        slug: `active-${RUN}`,
+        widgetKey: crypto.randomUUID(),
+        isActive: true,
+      },
+    })
+    await prisma.project.create({
+      data: {
+        orgId,
+        name: 'Inactive Project',
+        slug: `inactive-${RUN}`,
+        widgetKey: crypto.randomUUID(),
+        isActive: false,
+      },
+    })
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/billing',
+      headers: { cookie },
+    })
+
+    expect(res.statusCode).toBe(200)
+    const body = JSON.parse(res.body)
+    expect(body.projectCount).toBe(1)
+  })
+})

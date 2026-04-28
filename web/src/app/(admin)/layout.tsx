@@ -1,27 +1,31 @@
 import type { ReactNode } from 'react'
 import { cookies } from 'next/headers'
 import { redirect } from 'next/navigation'
+import NavLinks from './NavLinks'
 
 const BACKEND = process.env.BACKEND_URL ?? process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'
 // JWT must have three base64url segments — validate before interpolating into Cookie header.
 const jwtShape = /^[\w-]+\.[\w-]+\.[\w-]+$/
-// Strip anything outside the base64url alphabet before embedding in a Cookie header value
-// to prevent semicolon-based header injection (e.g. "a.b.c; injected-header: val").
-function sanitizeToken(token: string): string {
-  return token.replace(/[\r\n]/g, '')
+// Reject anything outside the base64url alphabet (A-Za-z0-9-_.) to prevent header injection
+// via semicolons, nulls, or other control characters — stricter than stripping \r\n alone.
+function sanitizeToken(token: string): string | null {
+  const stripped = token.replace(/[\r\n]/g, '')
+  if (!/^[A-Za-z0-9\-_.]+$/.test(stripped)) return null
+  return stripped
 }
 
 export default async function AdminLayout({ children }: { children: ReactNode }) {
   const cookieStore = cookies()
-  const accessToken = cookieStore.get('access_token')?.value
-  if (!accessToken || !jwtShape.test(accessToken)) redirect('/login')
+  const rawAccess = cookieStore.get('access_token')?.value
+  const safeAccess = rawAccess ? sanitizeToken(rawAccess) : null
+  if (!safeAccess || !jwtShape.test(safeAccess)) redirect('/login')
 
   // Only forward refresh_token if it also passes the shape check to prevent header injection.
-  const refreshToken = cookieStore.get('refresh_token')?.value
-  const validRefreshToken = refreshToken && jwtShape.test(refreshToken) ? refreshToken : null
-  const safeAccess = sanitizeToken(accessToken)
+  const rawRefresh = cookieStore.get('refresh_token')?.value
+  const safeRefresh = rawRefresh ? sanitizeToken(rawRefresh) : null
+  const validRefreshToken = safeRefresh && jwtShape.test(safeRefresh) ? safeRefresh : null
   const cookieHeader = validRefreshToken
-    ? `access_token=${safeAccess}; refresh_token=${sanitizeToken(validRefreshToken)}`
+    ? `access_token=${safeAccess}; refresh_token=${validRefreshToken}`
     : `access_token=${safeAccess}`
 
   let projectCount = 0
@@ -61,12 +65,7 @@ export default async function AdminLayout({ children }: { children: ReactNode })
           <span className="font-bold text-indigo-600 text-lg tracking-tight">LaunchLog</span>
         </div>
         <nav className="flex-1 px-3 py-4 space-y-1">
-          <a
-            href="/dashboard/projects"
-            className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-gray-700 hover:bg-indigo-50 hover:text-indigo-700 transition-colors"
-          >
-            Projects
-          </a>
+          <NavLinks />
         </nav>
       </aside>
       <main className="flex-1 overflow-auto">{children}</main>
