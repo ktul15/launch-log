@@ -1,10 +1,10 @@
-import { processChangelogPublishedJob, processFeatureShippedJob, processVoteVerificationJob, processSubscribeVerificationJob, handleWorkerFailedEvent, dispatchEmailNotificationJob, extractExcerpt } from '../workers/notificationWorker'
+import { processChangelogPublishedJob, processFeatureShippedJob, processFeatureStatusChangedJob, processVoteVerificationJob, processSubscribeVerificationJob, handleWorkerFailedEvent, dispatchEmailNotificationJob, extractExcerpt } from '../workers/notificationWorker'
 import { EmailNotificationJobData, VoteVerificationJobData, SubscriptionVerificationJobData } from '../jobs/index'
 import { SendResult } from '../services/emailService'
 
 type SendFn = (opts: { to: string; entryTitle: string; version?: string | null; excerpt?: string; changelogUrl: string; unsubscribeUrl: string }) => Promise<SendResult>
 
-function makeJob(overrides: Partial<EmailNotificationJobData> = {}): EmailNotificationJobData {
+function makeJob(overrides: Partial<Extract<EmailNotificationJobData, { type: 'changelog_published' }>> = {}): EmailNotificationJobData {
   return {
     type: 'changelog_published',
     referenceId: 'entry-uuid-1',
@@ -384,7 +384,7 @@ describe('handleWorkerFailedEvent', () => {
 
 type ShippedSendFn = (opts: { to: string; itemTitle: string; roadmapUrl: string; unsubscribeUrl: string }) => Promise<SendResult>
 
-function makeShippedJob(overrides: Partial<EmailNotificationJobData> = {}): EmailNotificationJobData {
+function makeShippedJob(overrides: Partial<Extract<EmailNotificationJobData, { type: 'feature_shipped' }>> = {}): EmailNotificationJobData {
   return {
     type: 'feature_shipped',
     referenceId: 'item-uuid-1',
@@ -437,7 +437,7 @@ function makeShippedDeps(overrides: {
 describe('processFeatureShippedJob', () => {
   it('returns early for non-feature_shipped type', async () => {
     const { prisma, log, sendEmail, mocks } = makeShippedDeps()
-    await processFeatureShippedJob(makeShippedJob({ type: 'changelog_published' }), { prisma, log, sendEmail })
+    await processFeatureShippedJob(makeShippedJob({ type: 'changelog_published' as never }), { prisma, log, sendEmail })
     expect(mocks.findFirst).not.toHaveBeenCalled()
     expect(mocks.subscriberFindMany).not.toHaveBeenCalled()
   })
@@ -909,12 +909,249 @@ describe('processFeatureShippedJob — batch retry on partial failure', () => {
   })
 })
 
+type StatusChangedSendFn = (opts: { to: string; featureTitle: string; newStatus: string; featuresUrl: string }) => Promise<SendResult>
+
+function makeStatusChangedJob(overrides: Partial<Extract<EmailNotificationJobData, { type: 'feature_status_changed' }>> = {}): EmailNotificationJobData {
+  return {
+    type: 'feature_status_changed',
+    referenceId: 'feature-uuid-1',
+    projectId: 'project-uuid-1',
+    newStatus: 'planned',
+    ...overrides,
+  }
+}
+
+function makeStatusChangedDeps(overrides: {
+  featureFindFirst?: jest.Mock
+  voteFindMany?: jest.Mock
+  notificationLogFindMany?: jest.Mock
+  createLog?: jest.Mock
+  sendEmail?: jest.Mock
+} = {}) {
+  const featureFindFirst = overrides.featureFindFirst ?? jest.fn().mockResolvedValue({
+    title: 'Dark mode',
+    status: 'planned',
+    project: { slug: 'acme' },
+  })
+
+  const voteFindMany = overrides.voteFindMany ?? jest.fn().mockResolvedValue([
+    { id: 'vote-1', voterEmail: 'voter@example.com' },
+  ])
+
+  const notificationLogFindMany = overrides.notificationLogFindMany ?? jest.fn().mockResolvedValue([])
+
+  const createLog = overrides.createLog ?? jest.fn().mockResolvedValue({})
+
+  const sendEmail: jest.Mock<Promise<SendResult>> =
+    overrides.sendEmail ?? jest.fn().mockResolvedValue({ ok: true })
+
+  const prisma = {
+    featureRequest: { findFirst: featureFindFirst },
+    vote: { findMany: voteFindMany },
+    notificationLog: {
+      findMany: notificationLogFindMany,
+      create: createLog,
+    },
+  } as unknown as Parameters<typeof processFeatureStatusChangedJob>[1]['prisma']
+
+  const log = {
+    warn: jest.fn(),
+    info: jest.fn(),
+    error: jest.fn(),
+  } as unknown as Parameters<typeof processFeatureStatusChangedJob>[1]['log']
+
+  return { prisma, log, sendEmail: sendEmail as StatusChangedSendFn, mocks: { featureFindFirst, voteFindMany, notificationLogFindMany, createLog, sendEmail } }
+}
+
+describe('processFeatureStatusChangedJob', () => {
+  it('returns early for non-feature_status_changed type', async () => {
+    const { prisma, log, sendEmail, mocks } = makeStatusChangedDeps()
+    await processFeatureStatusChangedJob(makeStatusChangedJob({ type: 'changelog_published' as never }), { prisma, log, sendEmail })
+    expect(mocks.featureFindFirst).not.toHaveBeenCalled()
+  })
+
+  it('returns early + warns when feature request not found', async () => {
+    const { prisma, log, sendEmail, mocks } = makeStatusChangedDeps({
+      featureFindFirst: jest.fn().mockResolvedValue(null),
+    })
+    await processFeatureStatusChangedJob(makeStatusChangedJob(), { prisma, log, sendEmail })
+    expect(mocks.voteFindMany).not.toHaveBeenCalled()
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ featureId: 'feature-uuid-1' }),
+      expect.stringContaining('not found'),
+    )
+  })
+
+  it('returns early when no verified voters', async () => {
+    const { prisma, log, sendEmail, mocks } = makeStatusChangedDeps({
+      voteFindMany: jest.fn().mockResolvedValue([]),
+    })
+    await processFeatureStatusChangedJob(makeStatusChangedJob(), { prisma, log, sendEmail })
+    expect(mocks.sendEmail).not.toHaveBeenCalled()
+  })
+
+  it('skips already-notified voters using voteId:newStatus dedup key', async () => {
+    const { prisma, log, sendEmail, mocks } = makeStatusChangedDeps({
+      voteFindMany: jest.fn().mockResolvedValue([
+        { id: 'vote-1', voterEmail: 'a@example.com' },
+        { id: 'vote-2', voterEmail: 'b@example.com' },
+      ]),
+      notificationLogFindMany: jest.fn().mockResolvedValue([
+        { referenceId: 'vote-1:planned' },
+        { referenceId: 'vote-2:planned' },
+      ]),
+    })
+    await processFeatureStatusChangedJob(makeStatusChangedJob(), { prisma, log, sendEmail })
+    expect(mocks.sendEmail).not.toHaveBeenCalled()
+    expect(log.info).toHaveBeenCalledWith(
+      expect.objectContaining({ featureId: 'feature-uuid-1', newStatus: 'planned' }),
+      expect.stringContaining('already notified'),
+    )
+  })
+
+  it('sends only to unnotified voters', async () => {
+    const { prisma, log, sendEmail, mocks } = makeStatusChangedDeps({
+      voteFindMany: jest.fn().mockResolvedValue([
+        { id: 'vote-1', voterEmail: 'a@example.com' },
+        { id: 'vote-2', voterEmail: 'b@example.com' },
+      ]),
+      notificationLogFindMany: jest.fn().mockResolvedValue([
+        { referenceId: 'vote-1:planned' },
+      ]),
+    })
+    await processFeatureStatusChangedJob(makeStatusChangedJob(), { prisma, log, sendEmail })
+    expect(mocks.sendEmail).toHaveBeenCalledTimes(1)
+    expect(mocks.sendEmail).toHaveBeenCalledWith(expect.objectContaining({ to: 'b@example.com' }))
+  })
+
+  it('creates notification log with voteId:newStatus referenceId and type status_changed', async () => {
+    const { prisma, log, sendEmail, mocks } = makeStatusChangedDeps()
+    await processFeatureStatusChangedJob(makeStatusChangedJob(), { prisma, log, sendEmail })
+    expect(mocks.createLog).toHaveBeenCalledWith({
+      data: { type: 'status_changed', referenceId: 'vote-1:planned' },
+    })
+  })
+
+  it('maps newStatus to human-readable label in email', async () => {
+    const { prisma, log, sendEmail, mocks } = makeStatusChangedDeps({
+      featureFindFirst: jest.fn().mockResolvedValue({
+        title: 'Dark mode',
+        status: 'in_progress',
+        project: { slug: 'acme' },
+      }),
+    })
+    await processFeatureStatusChangedJob(makeStatusChangedJob({ newStatus: 'in_progress' }), { prisma, log, sendEmail })
+    expect(mocks.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ newStatus: 'In Progress' }),
+    )
+  })
+
+  it('builds features URL using FRONTEND_URL and project slug', async () => {
+    const { prisma, log, sendEmail, mocks } = makeStatusChangedDeps({
+      featureFindFirst: jest.fn().mockResolvedValue({
+        title: 'Dark mode',
+        status: 'planned',
+        project: { slug: 'my-project' },
+      }),
+    })
+    await processFeatureStatusChangedJob(makeStatusChangedJob(), { prisma, log, sendEmail })
+    expect(mocks.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ featuresUrl: expect.stringContaining('/p/my-project/features') }),
+    )
+    const call = mocks.sendEmail.mock.calls[0][0] as { featuresUrl: string }
+    expect(() => new URL(call.featuresUrl)).not.toThrow()
+  })
+
+  it('returns early when current status no longer matches job status (stale job)', async () => {
+    const { prisma, log, sendEmail, mocks } = makeStatusChangedDeps({
+      featureFindFirst: jest.fn().mockResolvedValue({
+        title: 'Dark mode',
+        status: 'in_progress',
+        project: { slug: 'acme' },
+      }),
+    })
+    // job says 'planned' but DB now shows 'in_progress'
+    await processFeatureStatusChangedJob(makeStatusChangedJob({ newStatus: 'planned' }), { prisma, log, sendEmail })
+    expect(mocks.sendEmail).not.toHaveBeenCalled()
+    expect(log.info).toHaveBeenCalledWith(
+      expect.objectContaining({ jobStatus: 'planned', currentStatus: 'in_progress' }),
+      expect.stringContaining('stale'),
+    )
+  })
+
+  it('falls back to raw status value when STATUS_LABELS has no entry', async () => {
+    const { prisma, log, sendEmail, mocks } = makeStatusChangedDeps({
+      featureFindFirst: jest.fn().mockResolvedValue({
+        title: 'Dark mode',
+        status: 'unknown_future_status',
+        project: { slug: 'acme' },
+      }),
+    })
+    await processFeatureStatusChangedJob(
+      makeStatusChangedJob({ newStatus: 'unknown_future_status' as never }),
+      { prisma, log, sendEmail },
+    )
+    expect(mocks.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ newStatus: 'unknown_future_status' }),
+    )
+  })
+
+  it('does not create log row when send fails, then throws for retry', async () => {
+    const { prisma, log, sendEmail, mocks } = makeStatusChangedDeps({
+      voteFindMany: jest.fn().mockResolvedValue([
+        { id: 'vote-1', voterEmail: 'a@example.com' },
+        { id: 'vote-2', voterEmail: 'b@example.com' },
+      ]),
+      sendEmail: jest.fn()
+        .mockResolvedValueOnce({ ok: false, error: 'Bounced' })
+        .mockResolvedValueOnce({ ok: true }),
+    })
+    await expect(processFeatureStatusChangedJob(makeStatusChangedJob(), { prisma, log, sendEmail })).rejects.toThrow('email sends failed')
+    expect(mocks.createLog).toHaveBeenCalledTimes(1)
+    expect(mocks.createLog).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ referenceId: 'vote-2:planned' }),
+    }))
+  })
+
+  it('logs error when notificationLog.create rejects after email sent (duplicate risk)', async () => {
+    const { prisma, log, sendEmail } = makeStatusChangedDeps({
+      createLog: jest.fn().mockRejectedValue(new Error('DB deadlock')),
+    })
+    await processFeatureStatusChangedJob(makeStatusChangedJob(), { prisma, log, sendEmail })
+    expect(log.error).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error) }),
+      expect.stringContaining('duplicate risk'),
+    )
+  })
+
+  it('dedup uses different keys per status — voter notified for planned still gets in_progress email', async () => {
+    const { prisma, log, sendEmail, mocks } = makeStatusChangedDeps({
+      featureFindFirst: jest.fn().mockResolvedValue({
+        title: 'Dark mode',
+        status: 'in_progress',
+        project: { slug: 'acme' },
+      }),
+      voteFindMany: jest.fn().mockResolvedValue([
+        { id: 'vote-1', voterEmail: 'a@example.com' },
+      ]),
+      // vote-1 was already notified for 'planned', not for 'in_progress'
+      notificationLogFindMany: jest.fn().mockResolvedValue([
+        { referenceId: 'vote-1:planned' },
+      ]),
+    })
+    await processFeatureStatusChangedJob(makeStatusChangedJob({ newStatus: 'in_progress' }), { prisma, log, sendEmail })
+    expect(mocks.sendEmail).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('dispatchEmailNotificationJob', () => {
-  function makeDispatchPrisma(overrides: { changelogFindFirst?: jest.Mock; roadmapFindFirst?: jest.Mock } = {}) {
+  function makeDispatchPrisma(overrides: { changelogFindFirst?: jest.Mock; roadmapFindFirst?: jest.Mock; featureRequestFindFirst?: jest.Mock } = {}) {
     return {
       changelogEntry: { findFirst: overrides.changelogFindFirst ?? jest.fn().mockResolvedValue(null) },
       roadmapItem: { findFirst: overrides.roadmapFindFirst ?? jest.fn().mockResolvedValue(null) },
+      featureRequest: { findFirst: overrides.featureRequestFindFirst ?? jest.fn().mockResolvedValue(null) },
       subscriber: { findMany: jest.fn().mockResolvedValue([]) },
+      vote: { findMany: jest.fn().mockResolvedValue([]) },
       notificationLog: { findMany: jest.fn().mockResolvedValue([]) },
     } as unknown as Parameters<typeof dispatchEmailNotificationJob>[1]
   }
@@ -941,5 +1178,27 @@ describe('dispatchEmailNotificationJob', () => {
     expect((prisma as any).roadmapItem.findFirst).toHaveBeenCalled()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((prisma as any).changelogEntry.findFirst).not.toHaveBeenCalled()
+  })
+
+  it('routes feature_status_changed to processFeatureStatusChangedJob (calls featureRequest.findFirst)', async () => {
+    const prisma = makeDispatchPrisma()
+    const log = makeLog()
+    await dispatchEmailNotificationJob({ type: 'feature_status_changed', referenceId: 'f-1', projectId: 'p-1', newStatus: 'planned' }, prisma, log)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((prisma as any).featureRequest.findFirst).toHaveBeenCalled()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((prisma as any).changelogEntry.findFirst).not.toHaveBeenCalled()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((prisma as any).roadmapItem.findFirst).not.toHaveBeenCalled()
+  })
+
+  it('logs warn for unknown job type', async () => {
+    const prisma = makeDispatchPrisma()
+    const log = makeLog()
+    await dispatchEmailNotificationJob({ type: 'unknown_type' as never, referenceId: 'x', projectId: 'p-1' }, prisma, log)
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'unknown_type' }),
+      expect.stringContaining('unknown job type'),
+    )
   })
 })

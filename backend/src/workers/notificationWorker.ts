@@ -7,7 +7,7 @@ import {
   VoteVerificationJobData,
   SubscriptionVerificationJobData,
 } from '../jobs/index'
-import { sendChangelogEmail, sendFeatureShippedEmail, sendVoteVerificationEmail, sendSubscribeVerificationEmail, SendResult } from '../services/emailService'
+import { sendChangelogEmail, sendFeatureShippedEmail, sendFeatureStatusChangedEmail, sendVoteVerificationEmail, sendSubscribeVerificationEmail, SendResult } from '../services/emailService'
 import { env } from '../config/env'
 
 // Returned by worker factories — callers use close() for graceful shutdown.
@@ -290,6 +290,122 @@ export async function processFeatureShippedJob(
   }
 }
 
+const STATUS_LABELS: Record<string, string> = {
+  open: 'Open',
+  planned: 'Planned',
+  in_progress: 'In Progress',
+  shipped: 'Shipped',
+  closed: 'Closed',
+}
+
+type FeatureStatusChangedDeps = {
+  prisma: PrismaClient
+  log: FastifyBaseLogger
+  sendEmail: (opts: { to: string; featureTitle: string; newStatus: string; featuresUrl: string }) => Promise<SendResult>
+}
+
+export async function processFeatureStatusChangedJob(
+  data: EmailNotificationJobData,
+  deps: FeatureStatusChangedDeps,
+): Promise<void> {
+  if (data.type !== 'feature_status_changed') return
+
+  const { referenceId: featureId, projectId, newStatus } = data
+  const { prisma, log, sendEmail } = deps
+
+  const feature = await prisma.featureRequest.findFirst({
+    where: { id: featureId, projectId },
+    select: {
+      title: true,
+      status: true,
+      project: { select: { slug: true } },
+    },
+  })
+
+  if (!feature) {
+    log.warn({ featureId, projectId }, 'notification worker: feature request not found, skipping')
+    return
+  }
+
+  if (feature.status !== newStatus) {
+    log.info(
+      { featureId, jobStatus: newStatus, currentStatus: feature.status },
+      'notification worker: status changed since job was enqueued, skipping stale notification',
+    )
+    return
+  }
+
+  const featuresUrl = `${env.FRONTEND_URL}/p/${feature.project.slug}/features`
+  const statusLabel = STATUS_LABELS[newStatus] ?? newStatus
+
+  const voters = await prisma.vote.findMany({
+    where: { featureRequestId: featureId, verified: true },
+    select: { id: true, voterEmail: true },
+  })
+
+  if (voters.length === 0) return
+
+  // Dedup key encodes voteId + newStatus so each voter gets one email per status transition.
+  // subscriberId is null because voters are not project subscribers.
+  const dedupKeys = voters.map((v) => `${v.id}:${newStatus}`)
+  const alreadyNotified = await prisma.notificationLog.findMany({
+    where: { type: 'status_changed', referenceId: { in: dedupKeys } },
+    select: { referenceId: true },
+  })
+  const notifiedKeys = new Set(alreadyNotified.map((n) => n.referenceId))
+
+  const pending = voters.filter((v) => !notifiedKeys.has(`${v.id}:${newStatus}`))
+  if (pending.length === 0) {
+    log.info({ featureId, newStatus }, 'notification worker: all voters already notified, skipping')
+    return
+  }
+
+  const results = await Promise.allSettled(
+    pending.map(async (voter) => {
+      const result = await sendEmail({
+        to: voter.voterEmail,
+        featureTitle: feature.title,
+        newStatus: statusLabel,
+        featuresUrl,
+      })
+
+      if (!result.ok) {
+        log.warn(
+          { voteId: voter.id, error: result.error },
+          'notification worker: email send failed, skipping log entry',
+        )
+        return { sent: false }
+      }
+
+      await prisma.notificationLog.create({
+        data: { type: 'status_changed', referenceId: `${voter.id}:${newStatus}` },
+      })
+      return { sent: true }
+    }),
+  )
+
+  let sent = 0
+  let emailFailed = false
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      log.error(
+        { featureId, err: result.reason },
+        'notification worker: log create failed after email sent — duplicate risk on retry',
+      )
+    } else if (result.value.sent) {
+      sent++
+    } else {
+      emailFailed = true
+    }
+  }
+
+  log.info({ featureId, newStatus, total: pending.length, sent }, 'notification worker: batch complete')
+
+  if (emailFailed) {
+    throw new Error(`notification worker: ${pending.length - sent} of ${pending.length} email sends failed`)
+  }
+}
+
 type VoteVerificationDeps = {
   prisma: PrismaClient
   log: FastifyBaseLogger
@@ -462,6 +578,9 @@ export async function dispatchEmailNotificationJob(
   }
   if (data.type === 'feature_shipped') {
     return processFeatureShippedJob(data, { prisma, log, sendEmail: sendFeatureShippedEmail })
+  }
+  if (data.type === 'feature_status_changed') {
+    return processFeatureStatusChangedJob(data, { prisma, log, sendEmail: sendFeatureStatusChangedEmail })
   }
   log.warn({ type: (data as { type: string }).type }, 'notification worker: unknown job type, skipping')
 }

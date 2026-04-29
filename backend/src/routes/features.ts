@@ -224,10 +224,10 @@ export default async function featuresRoutes(fastify: FastifyInstance) {
         return reply.status(404).send({ message: 'Project not found' })
       }
 
-      const updated = await fastify.prisma.$transaction(async (tx) => {
+      const txResult = await fastify.prisma.$transaction(async (tx) => {
         const existing = await tx.featureRequest.findFirst({
           where: { id: featureId, projectId },
-          select: { id: true },
+          select: { id: true, status: true },
         })
         if (!existing) return null
 
@@ -236,15 +236,35 @@ export default async function featuresRoutes(fastify: FastifyInstance) {
         if ('description' in parsed.data) data.description = parsed.data.description
         if (parsed.data.status !== undefined) data.status = parsed.data.status
 
-        return tx.featureRequest.update({
+        const updated = await tx.featureRequest.update({
           where: { id: featureId, projectId },
           data,
           select: FEATURE_SELECT_OWNER,
         })
+        return { previousStatus: existing.status, updated }
       })
 
-      if (!updated) {
+      if (!txResult) {
         return reply.status(404).send({ message: 'Feature request not found' })
+      }
+
+      const { previousStatus, updated } = txResult
+
+      if (parsed.data.status !== undefined && updated.status !== previousStatus) {
+        try {
+          await fastify.emailNotificationsQueue.add(
+            'feature_status_changed',
+            {
+              type: 'feature_status_changed',
+              referenceId: featureId,
+              projectId,
+              newStatus: updated.status,
+            },
+            { jobId: `fsc:${featureId}:${updated.status}` },
+          )
+        } catch (err) {
+          req.log.error({ featureId, err }, 'features: failed to enqueue feature_status_changed job')
+        }
       }
 
       return reply.send(updated)

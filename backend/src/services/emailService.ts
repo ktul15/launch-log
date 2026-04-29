@@ -127,6 +127,48 @@ function buildFeatureShippedText(opts: SendFeatureShippedEmailOptions): string {
   return `Roadmap item shipped: ${opts.itemTitle}\n\nView it here: ${opts.roadmapUrl}\n\nUnsubscribe: ${opts.unsubscribeUrl}`
 }
 
+export type SendFeatureStatusChangedEmailOptions = {
+  to: string
+  featureTitle: string
+  newStatus: string
+  featuresUrl: string
+}
+
+export async function sendFeatureStatusChangedEmail(opts: SendFeatureStatusChangedEmailOptions): Promise<SendResult> {
+  const client = getResendClient()
+  if (!client) {
+    return { ok: false, error: 'Resend not configured — RESEND_API_KEY missing' }
+  }
+  try {
+    await client.emails.send({
+      from: env.RESEND_FROM_EMAIL,
+      to: opts.to,
+      subject: `Update on "${stripNewlines(opts.featureTitle)}"`,
+      html: buildFeatureStatusChangedHtml(opts),
+      text: buildFeatureStatusChangedText(opts),
+    })
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+function buildFeatureStatusChangedHtml(opts: SendFeatureStatusChangedEmailOptions): string {
+  const safeTitle = escHtml(opts.featureTitle)
+  const safeStatus = escHtml(opts.newStatus)
+  const safeUrl = escHtml(opts.featuresUrl)
+  return [
+    `<p>The status of a feature request you voted for has changed:</p>`,
+    `<p><strong>${safeTitle}</strong></p>`,
+    `<p>New status: <strong>${safeStatus}</strong></p>`,
+    `<p><a href="${safeUrl}">View feature requests</a></p>`,
+  ].join('\n')
+}
+
+function buildFeatureStatusChangedText(opts: SendFeatureStatusChangedEmailOptions): string {
+  return `The status of a feature request you voted for has changed:\n\n${stripNewlines(opts.featureTitle)}\n\nNew status: ${stripNewlines(opts.newStatus)}\n\nView feature requests: ${opts.featuresUrl}`
+}
+
 export type SendVoteVerificationEmailOptions = {
   to: string
   featureTitle: string

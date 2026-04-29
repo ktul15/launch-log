@@ -1,12 +1,12 @@
 import { Queue } from 'bullmq'
 import IORedis from 'ioredis'
+import { FeatureStatus } from '@prisma/client'
 import { env } from '../config/env'
 
-export type EmailNotificationJobData = {
-  type: 'changelog_published' | 'feature_shipped'
-  referenceId: string
-  projectId: string
-}
+export type EmailNotificationJobData =
+  | { type: 'changelog_published'; referenceId: string; projectId: string }
+  | { type: 'feature_shipped'; referenceId: string; projectId: string }
+  | { type: 'feature_status_changed'; referenceId: string; projectId: string; newStatus: FeatureStatus }
 
 export type VoteVerificationJobData = {
   type: 'vote_verification'
