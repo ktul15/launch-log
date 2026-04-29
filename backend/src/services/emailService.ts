@@ -4,6 +4,8 @@ import { env } from '../config/env'
 export type SendChangelogEmailOptions = {
   to: string
   entryTitle: string
+  version?: string | null
+  excerpt?: string
   changelogUrl: string
   unsubscribeUrl: string
 }
@@ -70,16 +72,24 @@ function buildHtml(opts: SendChangelogEmailOptions): string {
   // changelogUrl and unsubscribeUrl are built from env.FRONTEND_URL + slugs; escape for href attribute context
   const safeUrl = escHtml(opts.changelogUrl)
   const safeUnsubUrl = escHtml(opts.unsubscribeUrl)
-  return [
-    '<p>A new changelog entry has been published:</p>',
-    `<p><strong>${safeTitle}</strong></p>`,
-    `<p><a href="${safeUrl}">View the full changelog</a></p>`,
-    `<p style="font-size:12px;color:#888;"><a href="${safeUnsubUrl}">Unsubscribe</a></p>`,
-  ].join('\n')
+  const lines = ['<p>A new changelog entry has been published:</p>']
+  if (opts.version) {
+    lines.push(`<p><strong>${safeTitle}</strong> &mdash; ${escHtml(opts.version)}</p>`)
+  } else {
+    lines.push(`<p><strong>${safeTitle}</strong></p>`)
+  }
+  if (opts.excerpt) {
+    lines.push(`<p>${escHtml(opts.excerpt)}</p>`)
+  }
+  lines.push(`<p><a href="${safeUrl}">View the full changelog</a></p>`)
+  lines.push(`<p style="font-size:12px;color:#888;"><a href="${safeUnsubUrl}">Unsubscribe</a></p>`)
+  return lines.join('\n')
 }
 
 function buildText(opts: SendChangelogEmailOptions): string {
-  return `New changelog entry: ${opts.entryTitle}\n\nView it here: ${opts.changelogUrl}\n\nUnsubscribe: ${opts.unsubscribeUrl}`
+  const versionSuffix = opts.version ? ` — ${stripNewlines(opts.version)}` : ''
+  const excerptLine = opts.excerpt ? `\n\n${stripNewlines(opts.excerpt)}` : ''
+  return `New changelog entry: ${opts.entryTitle}${versionSuffix}${excerptLine}\n\nView it here: ${opts.changelogUrl}\n\nUnsubscribe: ${opts.unsubscribeUrl}`
 }
 
 export async function sendFeatureShippedEmail(opts: SendFeatureShippedEmailOptions): Promise<SendResult> {

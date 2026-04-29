@@ -16,6 +16,8 @@ describe('sendChangelogEmail', () => {
   const opts: SendChangelogEmailOptions = {
     to: 'user@example.com',
     entryTitle: 'v2.0 Released',
+    version: 'v2.0',
+    excerpt: 'This release includes dark mode and performance improvements.',
     changelogUrl: 'http://localhost:3000/p/acme/changelog',
     unsubscribeUrl: 'http://localhost:3001/api/v1/public/unsubscribe?token=tok-1',
   }
@@ -116,6 +118,85 @@ describe('sendChangelogEmail', () => {
     const callArgs = mockSend.mock.calls[0][0]
     expect(callArgs.html).toContain(opts.unsubscribeUrl)
     expect(callArgs.text).toContain(opts.unsubscribeUrl)
+  })
+
+  it('includes version in html and text when provided', async () => {
+    process.env.RESEND_API_KEY = 'test-key'
+    jest.resetModules()
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { sendChangelogEmail } = require('../services/emailService') as { sendChangelogEmail: EmailFn }
+    mockSend.mockResolvedValue({ data: { id: 'msg-ver' } })
+
+    await sendChangelogEmail(opts)
+
+    const callArgs = mockSend.mock.calls[0][0]
+    expect(callArgs.html).toContain('v2.0')
+    expect(callArgs.text).toContain('v2.0')
+  })
+
+  it('includes excerpt in html and text when provided', async () => {
+    process.env.RESEND_API_KEY = 'test-key'
+    jest.resetModules()
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { sendChangelogEmail } = require('../services/emailService') as { sendChangelogEmail: EmailFn }
+    mockSend.mockResolvedValue({ data: { id: 'msg-excerpt' } })
+
+    await sendChangelogEmail(opts)
+
+    const callArgs = mockSend.mock.calls[0][0]
+    expect(callArgs.html).toContain(opts.excerpt)
+    expect(callArgs.text).toContain(opts.excerpt)
+  })
+
+  it('omits version section when version is null', async () => {
+    process.env.RESEND_API_KEY = 'test-key'
+    jest.resetModules()
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { sendChangelogEmail } = require('../services/emailService') as { sendChangelogEmail: EmailFn }
+    mockSend.mockResolvedValue({ data: { id: 'msg-no-ver' } })
+
+    await sendChangelogEmail({ ...opts, version: null, excerpt: undefined })
+
+    const callArgs = mockSend.mock.calls[0][0]
+    expect(callArgs.html).not.toContain('&mdash;')
+    // undefined should not be stringified and appear literally in the output
+    expect(callArgs.html).not.toContain('>undefined<')
+    // the outer fixture's excerpt text must not appear
+    expect(callArgs.html).not.toContain('dark mode')
+  })
+
+  it('HTML-escapes version to prevent XSS in email body', async () => {
+    process.env.RESEND_API_KEY = 'test-key'
+    jest.resetModules()
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { sendChangelogEmail } = require('../services/emailService') as { sendChangelogEmail: EmailFn }
+    mockSend.mockResolvedValue({ data: { id: 'msg-xss-ver' } })
+
+    await sendChangelogEmail({
+      ...opts,
+      version: '<img src=x onerror=evil()>',
+    })
+
+    const html: string = mockSend.mock.calls[0][0].html
+    expect(html).not.toContain('<img')
+    expect(html).toContain('&lt;img')
+  })
+
+  it('HTML-escapes excerpt to prevent XSS in email body', async () => {
+    process.env.RESEND_API_KEY = 'test-key'
+    jest.resetModules()
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { sendChangelogEmail } = require('../services/emailService') as { sendChangelogEmail: EmailFn }
+    mockSend.mockResolvedValue({ data: { id: 'msg-xss-excerpt' } })
+
+    await sendChangelogEmail({
+      ...opts,
+      excerpt: '<script>stealCookies()</script>',
+    })
+
+    const html: string = mockSend.mock.calls[0][0].html
+    expect(html).not.toContain('<script>')
+    expect(html).toContain('&lt;script&gt;')
   })
 })
 
