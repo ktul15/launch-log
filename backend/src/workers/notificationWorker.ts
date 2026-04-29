@@ -16,10 +16,55 @@ export type WorkerHandle = {
   close: () => Promise<void>
 }
 
+// Block-level node types that should be separated by a space when concatenated.
+const BLOCK_TYPES = new Set(['paragraph', 'heading', 'blockquote', 'listItem', 'bulletList', 'orderedList', 'codeBlock'])
+
+// Walks a ProseMirror/TipTap JSON tree and collects text from leaf nodes.
+// Returns "" for any malformed or missing input — never throws.
+export function extractExcerpt(content: unknown, maxLen = 200): string {
+  try {
+    const parts: string[] = []
+    function walk(node: unknown): void {
+      if (!node || typeof node !== 'object') return
+      const n = node as Record<string, unknown>
+      if (n.type === 'text' && typeof n.text === 'string') {
+        parts.push(n.text)
+        return
+      }
+      if (!Array.isArray(n.content)) return
+      for (let i = 0; i < n.content.length; i++) {
+        walk(n.content[i])
+        // Insert a separator after each block-level child so adjacent blocks
+        // don't produce run-on text (e.g. bullet list items read as distinct phrases).
+        const child = n.content[i] as Record<string, unknown>
+        if (i < n.content.length - 1 && child && typeof child === 'object' && BLOCK_TYPES.has(child.type as string)) {
+          parts.push(' ')
+        }
+      }
+    }
+    walk(content)
+    const full = parts.join('').replace(/\s+/g, ' ').trim()
+    // Use [...full] to iterate by Unicode code point, not UTF-16 code unit,
+    // so the slice never splits a surrogate pair (e.g. emoji).
+    const chars = [...full]
+    if (chars.length <= maxLen) return full
+    return chars.slice(0, maxLen).join('').trimEnd() + '…'
+  } catch {
+    return ''
+  }
+}
+
 type ProcessDeps = {
   prisma: PrismaClient
   log: FastifyBaseLogger
-  sendEmail: (opts: { to: string; entryTitle: string; changelogUrl: string; unsubscribeUrl: string }) => Promise<SendResult>
+  sendEmail: (opts: {
+    to: string
+    entryTitle: string
+    version?: string | null
+    excerpt?: string
+    changelogUrl: string
+    unsubscribeUrl: string
+  }) => Promise<SendResult>
 }
 
 // Exported separately so tests can invoke it without a real Redis Worker
@@ -36,6 +81,8 @@ export async function processChangelogPublishedJob(
     where: { id: entryId, projectId, status: 'published' },
     select: {
       title: true,
+      version: true,
+      content: true,
       project: { select: { slug: true } },
     },
   })
@@ -81,6 +128,8 @@ export async function processChangelogPublishedJob(
       const result = await sendEmail({
         to: subscriber.email,
         entryTitle: entry.title,
+        version: entry.version,
+        excerpt: extractExcerpt(entry.content),
         changelogUrl,
         unsubscribeUrl: unsubscribeUrl.toString(),
       })

@@ -1,8 +1,8 @@
-import { processChangelogPublishedJob, processFeatureShippedJob, processVoteVerificationJob, processSubscribeVerificationJob, handleWorkerFailedEvent, dispatchEmailNotificationJob } from '../workers/notificationWorker'
+import { processChangelogPublishedJob, processFeatureShippedJob, processVoteVerificationJob, processSubscribeVerificationJob, handleWorkerFailedEvent, dispatchEmailNotificationJob, extractExcerpt } from '../workers/notificationWorker'
 import { EmailNotificationJobData, VoteVerificationJobData, SubscriptionVerificationJobData } from '../jobs/index'
 import { SendResult } from '../services/emailService'
 
-type SendFn = (opts: { to: string; entryTitle: string; changelogUrl: string; unsubscribeUrl: string }) => Promise<SendResult>
+type SendFn = (opts: { to: string; entryTitle: string; version?: string | null; excerpt?: string; changelogUrl: string; unsubscribeUrl: string }) => Promise<SendResult>
 
 function makeJob(overrides: Partial<EmailNotificationJobData> = {}): EmailNotificationJobData {
   return {
@@ -22,6 +22,13 @@ function makeDeps(overrides: {
 } = {}) {
   const findFirst = overrides.findFirst ?? jest.fn().mockResolvedValue({
     title: 'Test Entry',
+    version: 'v2.1',
+    content: {
+      type: 'doc',
+      content: [
+        { type: 'paragraph', content: [{ type: 'text', text: 'This is the entry body.' }] },
+      ],
+    },
     project: { slug: 'acme' },
   })
 
@@ -176,6 +183,8 @@ describe('processChangelogPublishedJob', () => {
     const { prisma, log, sendEmail, mocks } = makeDeps({
       findFirst: jest.fn().mockResolvedValue({
         title: 'Entry',
+        version: null,
+        content: { type: 'doc', content: [] },
         project: { slug: 'my-project' },
       }),
     })
@@ -197,6 +206,135 @@ describe('processChangelogPublishedJob', () => {
     )
     const call = mocks.sendEmail.mock.calls[0][0] as { unsubscribeUrl: string }
     expect(() => new URL(call.unsubscribeUrl)).not.toThrow()
+  })
+
+  it('passes version and excerpt to sendEmail', async () => {
+    const { prisma, log, sendEmail, mocks } = makeDeps()
+    await processChangelogPublishedJob(makeJob(), { prisma, log, sendEmail })
+    expect(mocks.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        version: 'v2.1',
+        excerpt: 'This is the entry body.',
+      }),
+    )
+  })
+
+  it('passes null version when entry has no version', async () => {
+    const { prisma, log, sendEmail, mocks } = makeDeps({
+      findFirst: jest.fn().mockResolvedValue({
+        title: 'No Version Entry',
+        version: null,
+        content: { type: 'doc', content: [] },
+        project: { slug: 'acme' },
+      }),
+    })
+    await processChangelogPublishedJob(makeJob(), { prisma, log, sendEmail })
+    expect(mocks.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ version: null }),
+    )
+  })
+})
+
+describe('extractExcerpt', () => {
+  it('extracts text from a simple paragraph', () => {
+    const content = {
+      type: 'doc',
+      content: [
+        { type: 'paragraph', content: [{ type: 'text', text: 'Hello world' }] },
+      ],
+    }
+    expect(extractExcerpt(content)).toBe('Hello world')
+  })
+
+  it('joins text from multiple nodes with spaces', () => {
+    const content = {
+      type: 'doc',
+      content: [
+        { type: 'paragraph', content: [{ type: 'text', text: 'First.' }] },
+        { type: 'paragraph', content: [{ type: 'text', text: 'Second.' }] },
+      ],
+    }
+    expect(extractExcerpt(content)).toBe('First. Second.')
+  })
+
+  it('truncates to maxLen and appends ellipsis', () => {
+    const longText = 'a'.repeat(250)
+    const content = {
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: longText }] }],
+    }
+    const result = extractExcerpt(content, 200)
+    expect(result.endsWith('…')).toBe(true)
+    expect(result.length).toBeLessThanOrEqual(201)
+  })
+
+  it('returns empty string for null input', () => {
+    expect(extractExcerpt(null)).toBe('')
+  })
+
+  it('returns empty string for empty doc', () => {
+    expect(extractExcerpt({ type: 'doc', content: [] })).toBe('')
+  })
+
+  it('handles malformed input without throwing', () => {
+    expect(() => extractExcerpt({ not: 'valid' })).not.toThrow()
+    expect(() => extractExcerpt(42)).not.toThrow()
+    expect(() => extractExcerpt(undefined)).not.toThrow()
+  })
+
+  it('collapses CRLF within text nodes into a single space', () => {
+    const content = {
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: 'line1\r\nline2' }] }],
+    }
+    expect(extractExcerpt(content)).toBe('line1 line2')
+  })
+
+  it('returns HTML-special chars verbatim (escaping is emailService responsibility)', () => {
+    const content = {
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: 'a < b & c' }] }],
+    }
+    expect(extractExcerpt(content)).toBe('a < b & c')
+  })
+
+  it('handles non-array content property on a node without throwing', () => {
+    expect(() => extractExcerpt({ type: 'doc', content: null })).not.toThrow()
+    expect(() => extractExcerpt({ type: 'doc', content: 'string' })).not.toThrow()
+    expect(extractExcerpt({ type: 'doc', content: null })).toBe('')
+  })
+
+  it('separates adjacent block-level items with a space', () => {
+    const content = {
+      type: 'doc',
+      content: [
+        {
+          type: 'bulletList',
+          content: [
+            { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Feature A' }] }] },
+            { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Feature B' }] }] },
+          ],
+        },
+      ],
+    }
+    const result = extractExcerpt(content)
+    expect(result).toContain('Feature A')
+    expect(result).toContain('Feature B')
+    // items must not be concatenated without any separator
+    expect(result).not.toContain('Feature AFeature B')
+  })
+
+  it('truncation is Unicode-safe — does not split surrogate pairs', () => {
+    // Each emoji is 2 UTF-16 code units but 1 code point. Place one at position 200.
+    const prefix = 'a'.repeat(199)
+    const content = {
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: prefix + '🚀 more text' }] }],
+    }
+    const result = extractExcerpt(content, 200)
+    // Result must be valid — every char in [...result] must be a complete code point
+    expect(() => JSON.stringify(result)).not.toThrow()
+    expect(result.endsWith('…')).toBe(true)
   })
 })
 
