@@ -573,14 +573,14 @@ export default async function publicRoutes(fastify: FastifyInstance) {
       // Check for an existing subscriber record before upserting to decide the response status.
       const existing = await fastify.prisma.subscriber.findUnique({
         where: { projectId_email: { projectId: project.id, email } },
-        select: { id: true, verified: true },
+        select: { id: true, verified: true, unsubscribedAt: true },
       })
 
-      if (existing?.verified) {
+      if (existing?.verified && !existing.unsubscribedAt) {
         return reply.status(200).send({ status: 'already_subscribed' })
       }
 
-      // Upsert — create new or leave existing unverified record in place (token preserved for resend).
+      // Upsert — create new or restore a previously unsubscribed record (clears unsubscribedAt).
       const subscriber = await fastify.prisma.subscriber.upsert({
         where: { projectId_email: { projectId: project.id, email } },
         create: {
@@ -589,7 +589,7 @@ export default async function publicRoutes(fastify: FastifyInstance) {
           verified: false,
           verificationToken: crypto.randomUUID(),
         },
-        update: {},
+        update: { unsubscribedAt: null, verificationToken: crypto.randomUUID() },
         select: { id: true },
       })
 
@@ -620,10 +620,10 @@ export default async function publicRoutes(fastify: FastifyInstance) {
 
       const subscriber = await fastify.prisma.subscriber.findUnique({
         where: { verificationToken: token },
-        select: { id: true, verified: true },
+        select: { id: true, verified: true, unsubscribedAt: true },
       })
 
-      if (!subscriber) {
+      if (!subscriber || subscriber.unsubscribedAt) {
         return reply.status(400).send({ message: 'Invalid token' })
       }
 
@@ -682,7 +682,7 @@ export default async function publicRoutes(fastify: FastifyInstance) {
     },
   )
 
-  // GET /unsubscribe — remove subscriber by token (included in all notification emails)
+  // GET /unsubscribe — soft-delete subscriber by token (included in all notification emails)
   fastify.get(
     '/unsubscribe',
     {
@@ -697,18 +697,47 @@ export default async function publicRoutes(fastify: FastifyInstance) {
 
       const { token } = parsed.data
 
-      const subscriber = await fastify.prisma.subscriber.findUnique({
-        where: { verificationToken: token },
-        select: { id: true },
-      })
-
-      // Treat unknown token as already-unsubscribed — idempotent so email prefetch scanners
-      // (Gmail, Apple Mail) don't cause an error on the user's real click.
-      if (!subscriber) {
+      // Short-circuit non-UUID tokens — no real unsubscribeToken can be non-UUID.
+      // Treat as already-unsubscribed: idempotent, prevents unnecessary DB query.
+      if (!isUUID(token)) {
         return reply.status(200).send({ unsubscribed: true })
       }
 
-      await fastify.prisma.subscriber.delete({ where: { id: subscriber.id } })
+      // Soft-delete: set unsubscribedAt instead of deleting the row.
+      // Preserves NotificationLog dedup history across unsubscribe/resubscribe cycles
+      // so a re-subscriber never receives duplicate emails for previously published entries.
+      await fastify.prisma.subscriber.updateMany({
+        where: { unsubscribeToken: token, unsubscribedAt: null },
+        data: { unsubscribedAt: new Date(), verified: false },
+      })
+
+      return reply.status(200).send({ unsubscribed: true })
+    },
+  )
+
+  // GET /voter-unsubscribe — opt voter out of status-change notifications for a specific feature
+  fastify.get(
+    '/voter-unsubscribe',
+    {
+      config: { rateLimit: { max: UNSUBSCRIBE_RATE_LIMIT, timeWindow: 3_600_000 } },
+    },
+    async (req, reply) => {
+      const parsed = tokenQuerySchema.safeParse(req.query)
+      if (!parsed.success) {
+        const messages = parsed.error.issues.map((i) => i.message).join(', ')
+        return reply.status(400).send({ message: messages })
+      }
+
+      const { token } = parsed.data
+
+      if (!isUUID(token)) {
+        return reply.status(200).send({ unsubscribed: true })
+      }
+
+      await fastify.prisma.vote.updateMany({
+        where: { unsubscribeToken: token, notifyOnStatusChange: true },
+        data: { notifyOnStatusChange: false },
+      })
 
       return reply.status(200).send({ unsubscribed: true })
     },

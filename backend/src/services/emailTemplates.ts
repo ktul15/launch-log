@@ -124,7 +124,7 @@ export function statusUpdateTemplate(opts: SendFeatureStatusChangedEmailOptions)
     ${ctaButton('View Feature Requests', opts.featuresUrl)}
   `
 
-  const footer = `You received this because you voted for this feature. To stop receiving these updates, remove your vote.`
+  const footer = `You received this because you voted for this feature. &nbsp;<a href="${safeUrl(opts.unsubscribeUrl)}" style="color:#9ca3af;">Unsubscribe</a>`
 
   return baseLayout({ title: `Update: ${opts.featureTitle}`, content, footer })
 }
@@ -174,7 +174,7 @@ export function featureShippedText(opts: SendFeatureShippedEmailOptions): string
 }
 
 export function statusUpdateText(opts: SendFeatureStatusChangedEmailOptions): string {
-  return `The status of a feature request you voted for has changed:\n\n${stripNewlines(opts.featureTitle)}\n\nNew status: ${stripNewlines(opts.newStatus)}\n\nView feature requests: ${stripNewlines(opts.featuresUrl)}`
+  return `The status of a feature request you voted for has changed:\n\n${stripNewlines(opts.featureTitle)}\n\nNew status: ${stripNewlines(opts.newStatus)}\n\nView feature requests: ${stripNewlines(opts.featuresUrl)}\n\nUnsubscribe: ${stripNewlines(opts.unsubscribeUrl)}`
 }
 
 export function voteVerificationText(opts: SendVoteVerificationEmailOptions): string {

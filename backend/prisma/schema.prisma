@@ -241,13 +241,15 @@ model Comment {
 }
 
 model Vote {
-  id                String   @id @default(uuid())
-  featureRequestId  String
-  voterEmail        String
-  verified          Boolean  @default(false)
-  verificationToken String   @unique
-  ipHash            String?
-  createdAt         DateTime @default(now())
+  id                    String   @id @default(uuid())
+  featureRequestId      String
+  voterEmail            String
+  verified              Boolean  @default(false)
+  verificationToken     String   @unique
+  unsubscribeToken      String   @unique @default(uuid())
+  notifyOnStatusChange  Boolean  @default(true)
+  ipHash                String?
+  createdAt             DateTime @default(now())
 
   featureRequest FeatureRequest @relation(fields: [featureRequestId], references: [id], onDelete: Cascade)
 
@@ -257,12 +259,14 @@ model Vote {
 }
 
 model Subscriber {
-  id                String   @id @default(uuid())
+  id                String    @id @default(uuid())
   projectId         String
   email             String
-  verified          Boolean  @default(false)
-  verificationToken String   @unique
-  createdAt         DateTime @default(now())
+  verified          Boolean   @default(false)
+  verificationToken String    @unique
+  unsubscribeToken  String    @unique @default(uuid())
+  unsubscribedAt    DateTime?
+  createdAt         DateTime  @default(now())
 
   project          Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
   notificationLogs NotificationLog[]

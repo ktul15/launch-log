@@ -178,6 +178,7 @@ describe('statusUpdateTemplate', () => {
     featureTitle: 'Offline Mode',
     newStatus: 'In Progress',
     featuresUrl: 'https://example.com/features',
+    unsubscribeUrl: 'https://example.com/api/v1/public/voter-unsubscribe?token=vote-tok-1',
   }
 
   it('produces full HTML document', () => {
@@ -196,9 +197,15 @@ describe('statusUpdateTemplate', () => {
     expect(statusUpdateTemplate(baseOpts)).toContain('https://example.com/features')
   })
 
-  it('does NOT contain a formal unsubscribe link', () => {
+  it('contains voter unsubscribe link', () => {
     const html = statusUpdateTemplate(baseOpts)
-    expect(html).not.toMatch(/href="[^"]*unsub/)
+    expect(html).toContain('voter-unsubscribe')
+    expect(html).toContain('vote-tok-1')
+  })
+
+  it('blocks javascript: URI in unsubscribeUrl', () => {
+    const html = statusUpdateTemplate({ ...baseOpts, unsubscribeUrl: 'javascript:alert(1)' })
+    expect(html).not.toContain('javascript:')
   })
 
   it('escapes XSS in feature title', () => {
@@ -388,13 +395,15 @@ describe('statusUpdateText', () => {
     featureTitle: 'Offline Mode',
     newStatus: 'In Progress',
     featuresUrl: 'https://example.com/features',
+    unsubscribeUrl: 'https://example.com/api/v1/public/voter-unsubscribe?token=vote-tok-1',
   }
 
-  it('includes title, status, and url', () => {
+  it('includes title, status, url, and unsubscribe url', () => {
     const text = statusUpdateText(baseOpts)
     expect(text).toContain('Offline Mode')
     expect(text).toContain('In Progress')
     expect(text).toContain('https://example.com/features')
+    expect(text).toContain('voter-unsubscribe')
   })
 
   it('strips newlines from URLs', () => {
