@@ -96,7 +96,9 @@ let app: FastifyInstance
 beforeAll(async () => {
   await prisma.organization.deleteMany({ where: { name: { contains: RUN } } })
   app = await buildApp()
-  app.notificationQueue.add = jest.fn().mockResolvedValue({})
+  app.emailNotificationsQueue.add = jest.fn().mockResolvedValue({})
+  app.voteVerificationQueue.add = jest.fn().mockResolvedValue({})
+  app.subscriptionVerificationQueue.add = jest.fn().mockResolvedValue({})
 })
 
 afterAll(async () => {

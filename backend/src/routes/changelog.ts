@@ -442,7 +442,7 @@ export default async function changelogRoutes(fastify: FastifyInstance) {
       // written to Redis before responding — if Redis is down, the caller gets a 500 and can
       // retry rather than silently losing the notification.
       if (result.publishedAtWasNull) {
-        await fastify.notificationQueue.add('changelog_published', {
+        await fastify.emailNotificationsQueue.add('changelog_published', {
           type: 'changelog_published',
           referenceId: entryId,
           projectId,

@@ -97,7 +97,7 @@ beforeAll(async () => {
   await prisma.organization.deleteMany({ where: { name: { contains: RUN } } })
   app = await buildApp()
   // Stub out queue so tests don't write to Redis and can assert job enqueueing
-  app.notificationQueue.add = jest.fn().mockResolvedValue({})
+  app.emailNotificationsQueue.add = jest.fn().mockResolvedValue({})
 })
 
 beforeEach(() => {
@@ -848,7 +848,7 @@ describe('POST /api/v1/projects/:projectId/changelog/:entryId/publish', () => {
     })
     const { id } = JSON.parse(created.body)
 
-    const addSpy = app.notificationQueue.add as jest.Mock
+    const addSpy = app.emailNotificationsQueue.add as jest.Mock
     addSpy.mockClear()
 
     await app.inject({
@@ -884,7 +884,7 @@ describe('POST /api/v1/projects/:projectId/changelog/:entryId/publish', () => {
       headers: { cookie },
     })
 
-    const addSpy = app.notificationQueue.add as jest.Mock
+    const addSpy = app.emailNotificationsQueue.add as jest.Mock
     addSpy.mockClear()
 
     // Second publish — entry already published, no job
@@ -923,7 +923,7 @@ describe('POST /api/v1/projects/:projectId/changelog/:entryId/publish', () => {
       headers: { cookie },
     })
 
-    const addSpy = app.notificationQueue.add as jest.Mock
+    const addSpy = app.emailNotificationsQueue.add as jest.Mock
     addSpy.mockClear()
 
     // Re-publish — publishedAt was null, so job is enqueued again

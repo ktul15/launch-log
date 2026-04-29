@@ -300,7 +300,7 @@ export default async function roadmapRoutes(fastify: FastifyInstance) {
 
       if (previousStatus !== 'shipped' && updated.status === 'shipped') {
         try {
-          await fastify.notificationQueue.add('feature_shipped', {
+          await fastify.emailNotificationsQueue.add('feature_shipped', {
             type: 'feature_shipped',
             referenceId: itemId,
             projectId,

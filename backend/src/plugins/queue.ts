@@ -1,42 +1,67 @@
 import fp from 'fastify-plugin'
 import { FastifyPluginAsync } from 'fastify'
 import { Queue } from 'bullmq'
-import { NotificationJobData, createNotificationQueue, createBullMQConnection } from '../jobs/index'
+import {
+  EmailNotificationJobData,
+  VoteVerificationJobData,
+  SubscriptionVerificationJobData,
+  createEmailNotificationsQueue,
+  createVoteVerificationQueue,
+  createSubscriptionVerificationQueue,
+  createBullMQConnection,
+} from '../jobs/index'
 
 declare module 'fastify' {
   interface FastifyInstance {
-    notificationQueue: Queue<NotificationJobData>
+    emailNotificationsQueue: Queue<EmailNotificationJobData>
+    voteVerificationQueue: Queue<VoteVerificationJobData>
+    subscriptionVerificationQueue: Queue<SubscriptionVerificationJobData>
   }
 }
 
 const queuePlugin: FastifyPluginAsync = fp(async (fastify) => {
-  const connection = createBullMQConnection()
+  // Each queue gets its own connection — BullMQ's Queue.close() behavior on a
+  // shared connection is non-deterministic when multiple queues share one IORedis.
+  const emailConnection = createBullMQConnection()
+  const voteConnection = createBullMQConnection()
+  const subscriptionConnection = createBullMQConnection()
 
-  // Verify Redis is reachable at startup — mirrors redis.ts pattern
+  // Verify Redis is reachable at startup using the first connection.
+  // If Redis is up for one connection, it's up for all three.
   await new Promise<void>((resolve, reject) => {
     const onReady = () => {
-      connection.off('error', onError)
+      emailConnection.off('error', onError)
       resolve()
     }
     const onError = (err: Error) => {
-      connection.off('ready', onReady)
-      connection.disconnect()
+      emailConnection.off('ready', onReady)
+      emailConnection.disconnect()
       reject(err)
     }
-    connection.once('ready', onReady)
-    connection.once('error', onError)
-    connection.connect()
+    emailConnection.once('ready', onReady)
+    emailConnection.once('error', onError)
+    emailConnection.connect()
   })
 
-  const queue = createNotificationQueue(connection)
+  // Connect remaining connections after Redis is confirmed reachable.
+  await voteConnection.connect()
+  await subscriptionConnection.connect()
 
-  fastify.decorate('notificationQueue', queue)
+  const emailQueue = createEmailNotificationsQueue(emailConnection)
+  const voteQueue = createVoteVerificationQueue(voteConnection)
+  const subscriptionQueue = createSubscriptionVerificationQueue(subscriptionConnection)
+
+  fastify.decorate('emailNotificationsQueue', emailQueue)
+  fastify.decorate('voteVerificationQueue', voteQueue)
+  fastify.decorate('subscriptionVerificationQueue', subscriptionQueue)
 
   fastify.addHook('onClose', async () => {
-    await queue.close()
-    if (connection.status !== 'end') {
-      await connection.quit()
-    }
+    await Promise.all([emailQueue.close(), voteQueue.close(), subscriptionQueue.close()])
+    await Promise.all([
+      emailConnection.status !== 'end' ? emailConnection.quit() : Promise.resolve(),
+      voteConnection.status !== 'end' ? voteConnection.quit() : Promise.resolve(),
+      subscriptionConnection.status !== 'end' ? subscriptionConnection.quit() : Promise.resolve(),
+    ])
   })
 })
 

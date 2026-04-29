@@ -5,7 +5,7 @@ import { PrismaClient } from '@prisma/client'
 import {
   processVoteVerificationJob,
 } from '../workers/notificationWorker'
-import type { NotificationJobData } from '../jobs/index'
+import type { VoteVerificationJobData } from '../jobs/index'
 
 const prisma = new PrismaClient()
 const RUN = crypto.randomUUID().replace(/-/g, '').slice(0, 12)
@@ -64,7 +64,7 @@ let app: FastifyInstance
 beforeAll(async () => {
   await prisma.organization.deleteMany({ where: { name: { contains: RUN } } })
   app = await buildApp()
-  app.notificationQueue.add = jest.fn().mockResolvedValue({})
+  app.voteVerificationQueue.add = jest.fn().mockResolvedValue({})
 })
 
 afterAll(async () => {
@@ -149,17 +149,17 @@ describe('POST /api/v1/public/:projectKey/features', () => {
       payload: { title: 'Webhooks', email: testEmail('voter-qj') },
     })
 
-    expect(app.notificationQueue.add).toHaveBeenCalledWith(
+    expect(app.voteVerificationQueue.add).toHaveBeenCalledWith(
       'vote_verification',
       expect.objectContaining({ type: 'vote_verification', projectId }),
     )
   })
 
-  it('still returns 201 when notificationQueue.add throws', async () => {
+  it('returns 500 when voteVerificationQueue.add throws (Redis down)', async () => {
     const { cookie } = await registerAndGetCookie(app, 'queue-fail')
     const { widgetKey } = await createProjectAndGetKey(app, cookie, 'queue-fail')
 
-    const original = app.notificationQueue.add as jest.Mock
+    const original = app.voteVerificationQueue.add as jest.Mock
     original.mockRejectedValueOnce(new Error('Redis connection refused'))
 
     const res = await app.inject({
@@ -167,12 +167,7 @@ describe('POST /api/v1/public/:projectKey/features', () => {
       url: `/api/v1/public/${widgetKey}/features`,
       payload: { title: 'Queue fail feature', email: testEmail('voter-qf') },
     })
-    expect(res.statusCode).toBe(201)
-
-    // Vote is still committed to DB despite queue failure
-    const featureId = JSON.parse(res.body).id
-    const vote = await prisma.vote.findFirst({ where: { featureRequestId: featureId } })
-    expect(vote).not.toBeNull()
+    expect(res.statusCode).toBe(500)
   })
 
   it('works without description (optional field)', async () => {
@@ -314,7 +309,7 @@ describe('processVoteVerificationJob', () => {
     const mockSendEmail = jest.fn().mockResolvedValue({ ok: true })
     const mockLog = { warn: jest.fn(), info: jest.fn(), error: jest.fn() } as any
 
-    const jobData: NotificationJobData = {
+    const jobData: VoteVerificationJobData = {
       type: 'vote_verification',
       referenceId: vote!.id,
       projectId,
@@ -428,7 +423,7 @@ describe('POST /api/v1/public/:projectKey/features/:featureId/vote', () => {
     const featureId = await submitFeature(app, widgetKey, 'Vote happy feature', 'vhf-submitter')
     const voterEmail = testEmail('vote-happy-voter')
 
-    ;(app.notificationQueue.add as jest.Mock).mockClear()
+    ;(app.voteVerificationQueue.add as jest.Mock).mockClear()
 
     const res = await app.inject({
       method: 'POST',
@@ -444,7 +439,7 @@ describe('POST /api/v1/public/:projectKey/features/:featureId/vote', () => {
     expect(vote!.verified).toBe(false)
     expect(vote!.verificationToken).toBeDefined()
 
-    expect(app.notificationQueue.add).toHaveBeenCalledWith(
+    expect(app.voteVerificationQueue.add).toHaveBeenCalledWith(
       'vote_verification',
       expect.objectContaining({ type: 'vote_verification', projectId }),
     )
@@ -461,7 +456,7 @@ describe('POST /api/v1/public/:projectKey/features/:featureId/vote', () => {
       url: `/api/v1/public/${widgetKey}/features/${featureId}/vote`,
       payload: { email: voterEmail },
     })
-    ;(app.notificationQueue.add as jest.Mock).mockClear()
+    ;(app.voteVerificationQueue.add as jest.Mock).mockClear()
 
     const res = await app.inject({
       method: 'POST',
@@ -488,7 +483,7 @@ describe('POST /api/v1/public/:projectKey/features/:featureId/vote', () => {
       url: `/api/v1/public/${widgetKey}/features/${featureId}/vote`,
       payload: { email: voterEmail },
     })
-    ;(app.notificationQueue.add as jest.Mock).mockClear()
+    ;(app.voteVerificationQueue.add as jest.Mock).mockClear()
 
     const vote = await prisma.vote.findFirst({ where: { featureRequestId: featureId, voterEmail } })
     await prisma.vote.update({ where: { id: vote!.id }, data: { verified: true } })
@@ -614,12 +609,12 @@ describe('POST /api/v1/public/:projectKey/features/:featureId/vote', () => {
     expect(res.statusCode).toBe(400)
   })
 
-  it('still returns 200 when notificationQueue.add throws', async () => {
+  it('returns 500 when voteVerificationQueue.add throws (Redis down)', async () => {
     const { cookie } = await registerAndGetCookie(app, 'vote-queue-fail')
     const { widgetKey } = await createProjectAndGetKey(app, cookie, 'vote-queue-fail')
     const featureId = await submitFeature(app, widgetKey, 'Queue fail vote', 'vqf-submitter')
 
-    const original = app.notificationQueue.add as jest.Mock
+    const original = app.voteVerificationQueue.add as jest.Mock
     original.mockRejectedValueOnce(new Error('Redis connection refused'))
 
     const res = await app.inject({
@@ -628,12 +623,7 @@ describe('POST /api/v1/public/:projectKey/features/:featureId/vote', () => {
       payload: { email: testEmail('vote-qf-voter') },
     })
 
-    expect(res.statusCode).toBe(200)
-
-    const vote = await prisma.vote.findFirst({
-      where: { featureRequestId: featureId, voterEmail: testEmail('vote-qf-voter') },
-    })
-    expect(vote).not.toBeNull()
+    expect(res.statusCode).toBe(500)
   })
 })
 
