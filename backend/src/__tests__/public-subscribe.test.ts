@@ -3,7 +3,7 @@ import { buildApp } from '../index'
 import { FastifyInstance } from 'fastify'
 import { PrismaClient } from '@prisma/client'
 import { processSubscribeVerificationJob } from '../workers/notificationWorker'
-import type { NotificationJobData } from '../jobs/index'
+import type { SubscriptionVerificationJobData } from '../jobs/index'
 
 const prisma = new PrismaClient()
 const RUN = crypto.randomUUID().replace(/-/g, '').slice(0, 12)
@@ -62,7 +62,7 @@ let app: FastifyInstance
 beforeAll(async () => {
   await prisma.organization.deleteMany({ where: { name: { contains: RUN } } })
   app = await buildApp()
-  app.notificationQueue.add = jest.fn().mockResolvedValue({})
+  app.subscriptionVerificationQueue.add = jest.fn().mockResolvedValue({})
 })
 
 afterAll(async () => {
@@ -105,7 +105,7 @@ describe('POST /api/v1/public/:projectKey/subscribe', () => {
     const { cookie } = await registerAndGetCookie(app, 'sub-queue')
     const { projectId, widgetKey } = await createProjectAndGetKey(app, cookie, 'sub-queue')
 
-    ;(app.notificationQueue.add as jest.Mock).mockClear()
+    ;(app.subscriptionVerificationQueue.add as jest.Mock).mockClear()
 
     await app.inject({
       method: 'POST',
@@ -113,7 +113,7 @@ describe('POST /api/v1/public/:projectKey/subscribe', () => {
       payload: { email: testEmail('sub-queue-user') },
     })
 
-    expect(app.notificationQueue.add).toHaveBeenCalledWith(
+    expect(app.subscriptionVerificationQueue.add).toHaveBeenCalledWith(
       'subscribe_verification',
       expect.objectContaining({ type: 'subscribe_verification', projectId }),
     )
@@ -159,7 +159,7 @@ describe('POST /api/v1/public/:projectKey/subscribe', () => {
       payload: { email },
     })
 
-    ;(app.notificationQueue.add as jest.Mock).mockClear()
+    ;(app.subscriptionVerificationQueue.add as jest.Mock).mockClear()
 
     // Second subscribe attempt before verification
     const res = await app.inject({
@@ -170,7 +170,7 @@ describe('POST /api/v1/public/:projectKey/subscribe', () => {
 
     expect(res.statusCode).toBe(200)
     expect(JSON.parse(res.body)).toEqual({ status: 'verification_sent' })
-    expect(app.notificationQueue.add).toHaveBeenCalledWith(
+    expect(app.subscriptionVerificationQueue.add).toHaveBeenCalledWith(
       'subscribe_verification',
       expect.objectContaining({ type: 'subscribe_verification' }),
     )
@@ -243,12 +243,12 @@ describe('POST /api/v1/public/:projectKey/subscribe', () => {
     await prisma.project.update({ where: { id: projectId }, data: { isActive: true } })
   })
 
-  it('returns 200 even when queue.add throws (subscriber is saved)', async () => {
+  it('returns 500 when subscriptionVerificationQueue.add throws (Redis down)', async () => {
     const { cookie } = await registerAndGetCookie(app, 'sub-queue-fail')
-    const { projectId, widgetKey } = await createProjectAndGetKey(app, cookie, 'sub-queue-fail')
+    const { widgetKey } = await createProjectAndGetKey(app, cookie, 'sub-queue-fail')
     const email = testEmail('sub-qf-user')
 
-    ;(app.notificationQueue.add as jest.Mock).mockRejectedValueOnce(new Error('Redis down'))
+    ;(app.subscriptionVerificationQueue.add as jest.Mock).mockRejectedValueOnce(new Error('Redis down'))
 
     const res = await app.inject({
       method: 'POST',
@@ -256,11 +256,7 @@ describe('POST /api/v1/public/:projectKey/subscribe', () => {
       payload: { email },
     })
 
-    expect(res.statusCode).toBe(200)
-    const subscriber = await prisma.subscriber.findUnique({
-      where: { projectId_email: { projectId, email } },
-    })
-    expect(subscriber).not.toBeNull()
+    expect(res.statusCode).toBe(500)
   })
 })
 
@@ -450,7 +446,7 @@ describe('processSubscribeVerificationJob (integration)', () => {
     const mockSendEmail = jest.fn().mockResolvedValue({ ok: true })
     const mockLog = { warn: jest.fn(), info: jest.fn(), error: jest.fn() } as any
 
-    const jobData: NotificationJobData = {
+    const jobData: SubscriptionVerificationJobData = {
       type: 'subscribe_verification',
       referenceId: subscriber!.id,
       projectId,

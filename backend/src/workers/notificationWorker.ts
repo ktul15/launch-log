@@ -1,9 +1,20 @@
 import { Worker } from 'bullmq'
 import { PrismaClient } from '@prisma/client'
 import type { FastifyBaseLogger } from 'fastify'
-import { createBullMQConnection, NotificationJobData } from '../jobs/index'
+import {
+  createBullMQConnection,
+  EmailNotificationJobData,
+  VoteVerificationJobData,
+  SubscriptionVerificationJobData,
+} from '../jobs/index'
 import { sendChangelogEmail, sendFeatureShippedEmail, sendVoteVerificationEmail, sendSubscribeVerificationEmail, SendResult } from '../services/emailService'
 import { env } from '../config/env'
+
+// Returned by worker factories — callers use close() for graceful shutdown.
+// close() stops the worker loop then quits the owned Redis connection.
+export type WorkerHandle = {
+  close: () => Promise<void>
+}
 
 type ProcessDeps = {
   prisma: PrismaClient
@@ -13,7 +24,7 @@ type ProcessDeps = {
 
 // Exported separately so tests can invoke it without a real Redis Worker
 export async function processChangelogPublishedJob(
-  data: NotificationJobData,
+  data: EmailNotificationJobData,
   deps: ProcessDeps,
 ): Promise<void> {
   if (data.type !== 'changelog_published') return
@@ -98,6 +109,7 @@ export async function processChangelogPublishedJob(
   )
 
   let sent = 0
+  let emailFailed = false
   for (const result of results) {
     if (result.status === 'rejected') {
       // notificationLog.create failed after email was sent — duplicate email risk on retry
@@ -107,10 +119,18 @@ export async function processChangelogPublishedJob(
       )
     } else if (result.value.sent) {
       sent++
+    } else {
+      emailFailed = true
     }
   }
 
   log.info({ entryId, total: pending.length, sent }, 'notification worker: batch complete')
+
+  // Throw so BullMQ retries the job for the failed subscribers.
+  // On retry, notificationLog dedup skips already-notified subscribers.
+  if (emailFailed) {
+    throw new Error(`notification worker: ${pending.length - sent} of ${pending.length} email sends failed`)
+  }
 }
 
 type FeatureShippedDeps = {
@@ -120,7 +140,7 @@ type FeatureShippedDeps = {
 }
 
 export async function processFeatureShippedJob(
-  data: NotificationJobData,
+  data: EmailNotificationJobData,
   deps: FeatureShippedDeps,
 ): Promise<void> {
   if (data.type !== 'feature_shipped') return
@@ -198,6 +218,7 @@ export async function processFeatureShippedJob(
   )
 
   let sent = 0
+  let emailFailed = false
   for (const result of results) {
     if (result.status === 'rejected') {
       log.error(
@@ -206,10 +227,18 @@ export async function processFeatureShippedJob(
       )
     } else if (result.value.sent) {
       sent++
+    } else {
+      emailFailed = true
     }
   }
 
   log.info({ itemId, total: pending.length, sent }, 'notification worker: batch complete')
+
+  // Throw so BullMQ retries the job for the failed subscribers.
+  // On retry, notificationLog dedup skips already-notified subscribers.
+  if (emailFailed) {
+    throw new Error(`notification worker: ${pending.length - sent} of ${pending.length} email sends failed`)
+  }
 }
 
 type VoteVerificationDeps = {
@@ -219,7 +248,7 @@ type VoteVerificationDeps = {
 }
 
 export async function processVoteVerificationJob(
-  data: NotificationJobData,
+  data: VoteVerificationJobData,
   deps: VoteVerificationDeps,
 ): Promise<void> {
   if (data.type !== 'vote_verification') return
@@ -291,7 +320,7 @@ type SubscribeVerificationDeps = {
 }
 
 export async function processSubscribeVerificationJob(
-  data: NotificationJobData,
+  data: SubscriptionVerificationJobData,
   deps: SubscribeVerificationDeps,
 ): Promise<void> {
   if (data.type !== 'subscribe_verification') return
@@ -373,33 +402,83 @@ export function handleWorkerFailedEvent(
   }
 }
 
-export function createNotificationWorker(
+// Exported for unit testing — called by createEmailNotificationsWorker's processor.
+export async function dispatchEmailNotificationJob(
+  data: EmailNotificationJobData,
   prisma: PrismaClient,
   log: FastifyBaseLogger,
-): Worker<NotificationJobData> {
+): Promise<void> {
+  if (data.type === 'changelog_published') {
+    return processChangelogPublishedJob(data, { prisma, log, sendEmail: sendChangelogEmail })
+  }
+  if (data.type === 'feature_shipped') {
+    return processFeatureShippedJob(data, { prisma, log, sendEmail: sendFeatureShippedEmail })
+  }
+  log.warn({ type: (data as { type: string }).type }, 'notification worker: unknown job type, skipping')
+}
+
+export function createEmailNotificationsWorker(
+  prisma: PrismaClient,
+  log: FastifyBaseLogger,
+): WorkerHandle {
   const connection = createBullMQConnection()
 
-  const worker = new Worker<NotificationJobData>(
-    'notifications',
-    async (job) => {
-      if (job.data.type === 'changelog_published') {
-        return processChangelogPublishedJob(job.data, { prisma, log, sendEmail: sendChangelogEmail })
-      }
-      if (job.data.type === 'feature_shipped') {
-        return processFeatureShippedJob(job.data, { prisma, log, sendEmail: sendFeatureShippedEmail })
-      }
-      if (job.data.type === 'vote_verification') {
-        return processVoteVerificationJob(job.data, { prisma, log, sendEmail: sendVoteVerificationEmail })
-      }
-      if (job.data.type === 'subscribe_verification') {
-        return processSubscribeVerificationJob(job.data, { prisma, log, sendEmail: sendSubscribeVerificationEmail })
-      }
-      log.warn({ type: job.data.type }, 'notification worker: unknown job type, skipping')
-    },
+  const worker = new Worker<EmailNotificationJobData>(
+    'email-notifications',
+    async (job) => dispatchEmailNotificationJob(job.data, prisma, log),
     { connection, concurrency: 5 },
   )
 
   worker.on('failed', (job, err) => handleWorkerFailedEvent(job, err, log))
 
-  return worker
+  return {
+    close: async () => {
+      await worker.close()
+      if (connection.status !== 'end') await connection.quit()
+    },
+  }
+}
+
+export function createVoteVerificationWorker(
+  prisma: PrismaClient,
+  log: FastifyBaseLogger,
+): WorkerHandle {
+  const connection = createBullMQConnection()
+
+  const worker = new Worker<VoteVerificationJobData>(
+    'vote-verification',
+    async (job) => processVoteVerificationJob(job.data, { prisma, log, sendEmail: sendVoteVerificationEmail }),
+    { connection, concurrency: 5 },
+  )
+
+  worker.on('failed', (job, err) => handleWorkerFailedEvent(job, err, log))
+
+  return {
+    close: async () => {
+      await worker.close()
+      if (connection.status !== 'end') await connection.quit()
+    },
+  }
+}
+
+export function createSubscriptionVerificationWorker(
+  prisma: PrismaClient,
+  log: FastifyBaseLogger,
+): WorkerHandle {
+  const connection = createBullMQConnection()
+
+  const worker = new Worker<SubscriptionVerificationJobData>(
+    'subscription-verification',
+    async (job) => processSubscribeVerificationJob(job.data, { prisma, log, sendEmail: sendSubscribeVerificationEmail }),
+    { connection, concurrency: 5 },
+  )
+
+  worker.on('failed', (job, err) => handleWorkerFailedEvent(job, err, log))
+
+  return {
+    close: async () => {
+      await worker.close()
+      if (connection.status !== 'end') await connection.quit()
+    },
+  }
 }

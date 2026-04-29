@@ -171,15 +171,11 @@ export default async function publicRoutes(fastify: FastifyInstance) {
         throw err
       }
 
-      try {
-        await fastify.notificationQueue.add('vote_verification', {
-          type: 'vote_verification',
-          referenceId: voteId,
-          projectId: project.id,
-        })
-      } catch (err) {
-        req.log.error({ voteId, err }, 'public: failed to enqueue vote_verification — vote exists but email will not be sent')
-      }
+      await fastify.voteVerificationQueue.add('vote_verification', {
+        type: 'vote_verification',
+        referenceId: voteId,
+        projectId: project.id,
+      })
 
       return reply.status(201).send(feature)
     },
@@ -288,15 +284,11 @@ export default async function publicRoutes(fastify: FastifyInstance) {
         throw err
       }
 
-      try {
-        await fastify.notificationQueue.add('vote_verification', {
-          type: 'vote_verification',
-          referenceId: voteId,
-          projectId: project.id,
-        })
-      } catch (err) {
-        req.log.error({ voteId, err }, 'public: failed to enqueue vote_verification — vote exists but email will not be sent')
-      }
+      await fastify.voteVerificationQueue.add('vote_verification', {
+        type: 'vote_verification',
+        referenceId: voteId,
+        projectId: project.id,
+      })
 
       return reply.status(200).send({ message: 'Verification email sent' })
     },
@@ -601,15 +593,11 @@ export default async function publicRoutes(fastify: FastifyInstance) {
         select: { id: true },
       })
 
-      try {
-        await fastify.notificationQueue.add('subscribe_verification', {
-          type: 'subscribe_verification',
-          referenceId: subscriber.id,
-          projectId: project.id,
-        })
-      } catch (err) {
-        req.log.error({ subscriberId: subscriber.id, err }, 'public: failed to enqueue subscribe_verification — subscriber exists but email will not be sent')
-      }
+      await fastify.subscriptionVerificationQueue.add('subscribe_verification', {
+        type: 'subscribe_verification',
+        referenceId: subscriber.id,
+        projectId: project.id,
+      })
 
       return reply.status(200).send({ status: 'verification_sent' })
     },

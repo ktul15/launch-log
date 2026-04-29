@@ -97,7 +97,7 @@ beforeAll(async () => {
   await prisma.organization.deleteMany({ where: { name: { contains: RUN } } })
   app = await buildApp()
   // Stub queue so tests don't write to Redis
-  app.notificationQueue.add = jest.fn().mockResolvedValue({})
+  app.emailNotificationsQueue.add = jest.fn().mockResolvedValue({})
 })
 
 afterAll(async () => {
@@ -673,7 +673,7 @@ describe('PATCH /api/v1/projects/:projectId/roadmap/reorder', () => {
 
 describe('PATCH roadmap item — feature_shipped job enqueuing', () => {
   beforeEach(() => {
-    ;(app.notificationQueue.add as jest.Mock).mockClear()
+    ;(app.emailNotificationsQueue.add as jest.Mock).mockClear()
   })
 
   it('enqueues feature_shipped job when status transitions in_progress → shipped', async () => {
@@ -689,8 +689,8 @@ describe('PATCH roadmap item — feature_shipped job enqueuing', () => {
     })
 
     expect(res.statusCode).toBe(200)
-    expect(app.notificationQueue.add).toHaveBeenCalledTimes(1)
-    expect(app.notificationQueue.add).toHaveBeenCalledWith('feature_shipped', {
+    expect(app.emailNotificationsQueue.add).toHaveBeenCalledTimes(1)
+    expect(app.emailNotificationsQueue.add).toHaveBeenCalledWith('feature_shipped', {
       type: 'feature_shipped',
       referenceId: itemId,
       projectId,
@@ -710,7 +710,7 @@ describe('PATCH roadmap item — feature_shipped job enqueuing', () => {
     })
 
     expect(res.statusCode).toBe(200)
-    expect(app.notificationQueue.add).toHaveBeenCalledTimes(1)
+    expect(app.emailNotificationsQueue.add).toHaveBeenCalledTimes(1)
   })
 
   it('does not enqueue when item is already shipped', async () => {
@@ -726,7 +726,7 @@ describe('PATCH roadmap item — feature_shipped job enqueuing', () => {
     })
 
     expect(res.statusCode).toBe(200)
-    expect(app.notificationQueue.add).not.toHaveBeenCalled()
+    expect(app.emailNotificationsQueue.add).not.toHaveBeenCalled()
   })
 
   it('does not enqueue when status changes to in_progress', async () => {
@@ -742,7 +742,7 @@ describe('PATCH roadmap item — feature_shipped job enqueuing', () => {
     })
 
     expect(res.statusCode).toBe(200)
-    expect(app.notificationQueue.add).not.toHaveBeenCalled()
+    expect(app.emailNotificationsQueue.add).not.toHaveBeenCalled()
   })
 
   it('does not enqueue when only title is updated', async () => {
@@ -758,7 +758,7 @@ describe('PATCH roadmap item — feature_shipped job enqueuing', () => {
     })
 
     expect(res.statusCode).toBe(200)
-    expect(app.notificationQueue.add).not.toHaveBeenCalled()
+    expect(app.emailNotificationsQueue.add).not.toHaveBeenCalled()
   })
 
   it('does not enqueue on second PATCH to shipped (planned → shipped → shipped)', async () => {
@@ -773,9 +773,9 @@ describe('PATCH roadmap item — feature_shipped job enqueuing', () => {
       headers: { cookie },
       payload: { status: 'shipped' },
     })
-    expect(app.notificationQueue.add).toHaveBeenCalledTimes(1)
+    expect(app.emailNotificationsQueue.add).toHaveBeenCalledTimes(1)
 
-    ;(app.notificationQueue.add as jest.Mock).mockClear()
+    ;(app.emailNotificationsQueue.add as jest.Mock).mockClear()
 
     // Second PATCH: shipped → shipped — must not enqueue again
     const res = await app.inject({
@@ -786,6 +786,6 @@ describe('PATCH roadmap item — feature_shipped job enqueuing', () => {
     })
 
     expect(res.statusCode).toBe(200)
-    expect(app.notificationQueue.add).not.toHaveBeenCalled()
+    expect(app.emailNotificationsQueue.add).not.toHaveBeenCalled()
   })
 })

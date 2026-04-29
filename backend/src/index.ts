@@ -7,12 +7,16 @@ import path from 'path'
 dotenv.config({ path: path.resolve(__dirname, '../.env'), quiet: true })
 
 import Fastify, { FastifyInstance } from 'fastify'
-import { Worker } from 'bullmq'
 import { PrismaClientKnownRequestError } from '@prisma/client/runtime/library'
 import { env } from './config/env'
 import { registerPlugins } from './plugins'
 import { registerRoutes } from './routes'
-import { createNotificationWorker } from './workers/notificationWorker'
+import {
+  createEmailNotificationsWorker,
+  createVoteVerificationWorker,
+  createSubscriptionVerificationWorker,
+  WorkerHandle,
+} from './workers/notificationWorker'
 
 export const buildApp = async (): Promise<FastifyInstance> => {
   const app = Fastify({
@@ -63,17 +67,25 @@ export const buildApp = async (): Promise<FastifyInstance> => {
 }
 
 let runningApp: FastifyInstance | null = null
-let runningWorker: Worker | null = null
+let runningWorkers: WorkerHandle[] = []
 
 const start = async () => {
   try {
     runningApp = await buildApp()
-    // Worker must start after buildApp() so app.prisma is available.
-    // Worker uses prisma — it must close before app.close() disconnects prisma.
-    runningWorker = createNotificationWorker(runningApp.prisma, runningApp.log)
+    // Workers must start after buildApp() so app.prisma is available.
+    // Workers use prisma — they must close before app.close() disconnects prisma.
+    runningWorkers = [
+      createEmailNotificationsWorker(runningApp.prisma, runningApp.log),
+      createVoteVerificationWorker(runningApp.prisma, runningApp.log),
+      createSubscriptionVerificationWorker(runningApp.prisma, runningApp.log),
+    ]
     await runningApp.listen({ port: env.PORT, host: '0.0.0.0' })
   } catch (err) {
-    // runningApp may be null if buildApp() threw before assigning
+    // Close any workers that were created before the listen failure
+    // to prevent dangling Redis connections on crash-restart cycles.
+    if (runningWorkers.length > 0) {
+      await Promise.all(runningWorkers.map((w) => w.close())).catch(() => {})
+    }
     if (runningApp) {
       runningApp.log.error(err)
     } else {
@@ -85,9 +97,10 @@ const start = async () => {
 
 const gracefulShutdown = async (signal: string) => {
   console.warn(`Received ${signal}, shutting down…`)
-  // Close worker before app — worker processor uses prisma, which app.close() disconnects
-  if (runningWorker) {
-    await runningWorker.close()
+  // Close workers before app — worker processors use prisma, which app.close() disconnects.
+  // Each WorkerHandle.close() stops the worker loop then quits its owned Redis connection.
+  if (runningWorkers.length > 0) {
+    await Promise.all(runningWorkers.map((w) => w.close()))
   }
   // Fastify.close() triggers all onClose hooks (prisma.$disconnect, redis.quit, queue.close)
   if (runningApp) {

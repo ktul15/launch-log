@@ -1,10 +1,10 @@
-import { processChangelogPublishedJob, processFeatureShippedJob, processVoteVerificationJob, processSubscribeVerificationJob, handleWorkerFailedEvent } from '../workers/notificationWorker'
-import { NotificationJobData } from '../jobs/index'
+import { processChangelogPublishedJob, processFeatureShippedJob, processVoteVerificationJob, processSubscribeVerificationJob, handleWorkerFailedEvent, dispatchEmailNotificationJob } from '../workers/notificationWorker'
+import { EmailNotificationJobData, VoteVerificationJobData, SubscriptionVerificationJobData } from '../jobs/index'
 import { SendResult } from '../services/emailService'
 
 type SendFn = (opts: { to: string; entryTitle: string; changelogUrl: string; unsubscribeUrl: string }) => Promise<SendResult>
 
-function makeJob(overrides: Partial<NotificationJobData> = {}): NotificationJobData {
+function makeJob(overrides: Partial<EmailNotificationJobData> = {}): EmailNotificationJobData {
   return {
     type: 'changelog_published',
     referenceId: 'entry-uuid-1',
@@ -57,7 +57,7 @@ function makeDeps(overrides: {
 describe('processChangelogPublishedJob', () => {
   it('returns early for non-changelog_published type', async () => {
     const { prisma, log, sendEmail, mocks } = makeDeps()
-    await processChangelogPublishedJob(makeJob({ type: 'vote_verification' }), { prisma, log, sendEmail })
+    await processChangelogPublishedJob(makeJob({ type: 'vote_verification' as never }), { prisma, log, sendEmail })
     expect(mocks.findFirst).not.toHaveBeenCalled()
   })
 
@@ -123,7 +123,7 @@ describe('processChangelogPublishedJob', () => {
     })
   })
 
-  it('does not create log row when email send fails, continues to next subscriber', async () => {
+  it('does not create log row when email send fails, continues to next subscriber, then throws for retry', async () => {
     const { prisma, log, sendEmail, mocks } = makeDeps({
       findMany: jest.fn().mockResolvedValue([
         { id: 'sub-1', email: 'a@example.com' },
@@ -133,7 +133,7 @@ describe('processChangelogPublishedJob', () => {
         .mockResolvedValueOnce({ ok: false, error: 'Bounced' })
         .mockResolvedValueOnce({ ok: true }),
     })
-    await processChangelogPublishedJob(makeJob(), { prisma, log, sendEmail })
+    await expect(processChangelogPublishedJob(makeJob(), { prisma, log, sendEmail })).rejects.toThrow('email sends failed')
 
     // Only one log row — for the successful send
     expect(mocks.createLog).toHaveBeenCalledTimes(1)
@@ -143,7 +143,7 @@ describe('processChangelogPublishedJob', () => {
     expect(log.warn).toHaveBeenCalled()
   })
 
-  it('logs batch summary with correct counts', async () => {
+  it('logs batch summary with correct counts, then throws when any send failed', async () => {
     const { prisma, log, sendEmail } = makeDeps({
       findMany: jest.fn().mockResolvedValue([
         { id: 'sub-1', email: 'a@example.com' },
@@ -153,7 +153,7 @@ describe('processChangelogPublishedJob', () => {
         .mockResolvedValueOnce({ ok: true })
         .mockResolvedValueOnce({ ok: false, error: 'Failed' }),
     })
-    await processChangelogPublishedJob(makeJob(), { prisma, log, sendEmail })
+    await expect(processChangelogPublishedJob(makeJob(), { prisma, log, sendEmail })).rejects.toThrow('email sends failed')
     expect(log.info).toHaveBeenCalledWith(
       expect.objectContaining({ total: 2, sent: 1 }),
       expect.stringContaining('batch complete'),
@@ -246,7 +246,7 @@ describe('handleWorkerFailedEvent', () => {
 
 type ShippedSendFn = (opts: { to: string; itemTitle: string; roadmapUrl: string; unsubscribeUrl: string }) => Promise<SendResult>
 
-function makeShippedJob(overrides: Partial<NotificationJobData> = {}): NotificationJobData {
+function makeShippedJob(overrides: Partial<EmailNotificationJobData> = {}): EmailNotificationJobData {
   return {
     type: 'feature_shipped',
     referenceId: 'item-uuid-1',
@@ -371,7 +371,7 @@ describe('processFeatureShippedJob', () => {
     })
   })
 
-  it('does not create log row when send fails, continues to next subscriber', async () => {
+  it('does not create log row when send fails, continues to next subscriber, then throws for retry', async () => {
     const { prisma, log, sendEmail, mocks } = makeShippedDeps({
       findMany: jest.fn().mockResolvedValue([
         { id: 'sub-1', email: 'a@example.com' },
@@ -381,7 +381,7 @@ describe('processFeatureShippedJob', () => {
         .mockResolvedValueOnce({ ok: false, error: 'Bounced' })
         .mockResolvedValueOnce({ ok: true }),
     })
-    await processFeatureShippedJob(makeShippedJob(), { prisma, log, sendEmail })
+    await expect(processFeatureShippedJob(makeShippedJob(), { prisma, log, sendEmail })).rejects.toThrow('email sends failed')
     expect(mocks.createLog).toHaveBeenCalledTimes(1)
     expect(mocks.createLog).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ subscriberId: 'sub-2' }),
@@ -426,7 +426,7 @@ describe('processFeatureShippedJob', () => {
     expect(() => new URL(call.unsubscribeUrl)).not.toThrow()
   })
 
-  it('logs batch summary with correct counts', async () => {
+  it('logs batch summary with correct counts, then throws when any send failed', async () => {
     const { prisma, log, sendEmail } = makeShippedDeps({
       findMany: jest.fn().mockResolvedValue([
         { id: 'sub-1', email: 'a@example.com' },
@@ -436,7 +436,7 @@ describe('processFeatureShippedJob', () => {
         .mockResolvedValueOnce({ ok: true })
         .mockResolvedValueOnce({ ok: false, error: 'Failed' }),
     })
-    await processFeatureShippedJob(makeShippedJob(), { prisma, log, sendEmail })
+    await expect(processFeatureShippedJob(makeShippedJob(), { prisma, log, sendEmail })).rejects.toThrow('email sends failed')
     expect(log.info).toHaveBeenCalledWith(
       expect.objectContaining({ total: 2, sent: 1 }),
       expect.stringContaining('batch complete'),
@@ -446,7 +446,7 @@ describe('processFeatureShippedJob', () => {
 
 type VoteVerifySendFn = (opts: { to: string; featureTitle: string; verifyUrl: string }) => Promise<SendResult>
 
-function makeVoteJob(overrides: Partial<NotificationJobData> = {}): NotificationJobData {
+function makeVoteJob(overrides: Partial<VoteVerificationJobData> = {}): VoteVerificationJobData {
   return {
     type: 'vote_verification',
     referenceId: 'vote-uuid-1',
@@ -491,7 +491,7 @@ function makeVoteDeps(overrides: {
 describe('processVoteVerificationJob', () => {
   it('returns early for non-vote_verification type', async () => {
     const { prisma, log, sendEmail, mocks } = makeVoteDeps()
-    await processVoteVerificationJob(makeVoteJob({ type: 'changelog_published' }), { prisma, log, sendEmail })
+    await processVoteVerificationJob(makeVoteJob({ type: 'changelog_published' as never }), { prisma, log, sendEmail })
     expect(mocks.voteFindFirst).not.toHaveBeenCalled()
   })
 
@@ -580,7 +580,7 @@ describe('processVoteVerificationJob', () => {
 
 type SubVerifySendFn = (opts: { to: string; projectName: string; verifyUrl: string; unsubscribeUrl: string }) => Promise<SendResult>
 
-function makeSubVerifyJob(overrides: Partial<NotificationJobData> = {}): NotificationJobData {
+function makeSubVerifyJob(overrides: Partial<SubscriptionVerificationJobData> = {}): SubscriptionVerificationJobData {
   return {
     type: 'subscribe_verification',
     referenceId: 'sub-uuid-1',
@@ -625,7 +625,7 @@ function makeSubVerifyDeps(overrides: {
 describe('processSubscribeVerificationJob', () => {
   it('returns early for non-subscribe_verification type', async () => {
     const { prisma, log, sendEmail, mocks } = makeSubVerifyDeps()
-    await processSubscribeVerificationJob(makeSubVerifyJob({ type: 'changelog_published' }), { prisma, log, sendEmail })
+    await processSubscribeVerificationJob(makeSubVerifyJob({ type: 'changelog_published' as never }), { prisma, log, sendEmail })
     expect(mocks.subscriberFindFirst).not.toHaveBeenCalled()
   })
 
@@ -711,5 +711,97 @@ describe('processSubscribeVerificationJob', () => {
     await expect(
       processSubscribeVerificationJob(makeSubVerifyJob(), { prisma, log, sendEmail }),
     ).rejects.toThrow('subscribe verification email failed')
+  })
+})
+
+describe('processChangelogPublishedJob — batch retry on partial failure', () => {
+  it('throws after batch when at least one email send fails so BullMQ retries for missed subscribers', async () => {
+    const { prisma, log, sendEmail } = makeDeps({
+      findMany: jest.fn().mockResolvedValue([
+        { id: 'sub-1', email: 'a@example.com', verificationToken: 'tok-1' },
+        { id: 'sub-2', email: 'b@example.com', verificationToken: 'tok-2' },
+      ]),
+      sendEmail: jest.fn()
+        .mockResolvedValueOnce({ ok: true })
+        .mockResolvedValueOnce({ ok: false, error: 'Bounced' }),
+    })
+    await expect(
+      processChangelogPublishedJob(makeJob(), { prisma, log, sendEmail }),
+    ).rejects.toThrow('email sends failed')
+  })
+
+  it('does not throw when all sends succeed', async () => {
+    const { prisma, log, sendEmail } = makeDeps({
+      findMany: jest.fn().mockResolvedValue([
+        { id: 'sub-1', email: 'a@example.com', verificationToken: 'tok-1' },
+        { id: 'sub-2', email: 'b@example.com', verificationToken: 'tok-2' },
+      ]),
+    })
+    await expect(
+      processChangelogPublishedJob(makeJob(), { prisma, log, sendEmail }),
+    ).resolves.toBeUndefined()
+  })
+})
+
+describe('processFeatureShippedJob — batch retry on partial failure', () => {
+  it('throws after batch when at least one email send fails so BullMQ retries for missed subscribers', async () => {
+    const { prisma, log, sendEmail } = makeShippedDeps({
+      findMany: jest.fn().mockResolvedValue([
+        { id: 'sub-1', email: 'a@example.com', verificationToken: 'tok-1' },
+        { id: 'sub-2', email: 'b@example.com', verificationToken: 'tok-2' },
+      ]),
+      sendEmail: jest.fn()
+        .mockResolvedValueOnce({ ok: false, error: 'Bounced' })
+        .mockResolvedValueOnce({ ok: true }),
+    })
+    await expect(
+      processFeatureShippedJob(makeShippedJob(), { prisma, log, sendEmail }),
+    ).rejects.toThrow('email sends failed')
+  })
+
+  it('does not throw when all sends succeed', async () => {
+    const { prisma, log, sendEmail } = makeShippedDeps({
+      findMany: jest.fn().mockResolvedValue([
+        { id: 'sub-1', email: 'a@example.com', verificationToken: 'tok-1' },
+      ]),
+    })
+    await expect(
+      processFeatureShippedJob(makeShippedJob(), { prisma, log, sendEmail }),
+    ).resolves.toBeUndefined()
+  })
+})
+
+describe('dispatchEmailNotificationJob', () => {
+  function makeDispatchPrisma(overrides: { changelogFindFirst?: jest.Mock; roadmapFindFirst?: jest.Mock } = {}) {
+    return {
+      changelogEntry: { findFirst: overrides.changelogFindFirst ?? jest.fn().mockResolvedValue(null) },
+      roadmapItem: { findFirst: overrides.roadmapFindFirst ?? jest.fn().mockResolvedValue(null) },
+      subscriber: { findMany: jest.fn().mockResolvedValue([]) },
+      notificationLog: { findMany: jest.fn().mockResolvedValue([]) },
+    } as unknown as Parameters<typeof dispatchEmailNotificationJob>[1]
+  }
+
+  function makeLog() {
+    return { warn: jest.fn(), info: jest.fn(), error: jest.fn() } as unknown as Parameters<typeof dispatchEmailNotificationJob>[2]
+  }
+
+  it('routes changelog_published to processChangelogPublishedJob (calls changelogEntry.findFirst)', async () => {
+    const prisma = makeDispatchPrisma()
+    const log = makeLog()
+    await dispatchEmailNotificationJob({ type: 'changelog_published', referenceId: 'e-1', projectId: 'p-1' }, prisma, log)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((prisma as any).changelogEntry.findFirst).toHaveBeenCalled()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((prisma as any).roadmapItem.findFirst).not.toHaveBeenCalled()
+  })
+
+  it('routes feature_shipped to processFeatureShippedJob (calls roadmapItem.findFirst)', async () => {
+    const prisma = makeDispatchPrisma()
+    const log = makeLog()
+    await dispatchEmailNotificationJob({ type: 'feature_shipped', referenceId: 'i-1', projectId: 'p-1' }, prisma, log)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((prisma as any).roadmapItem.findFirst).toHaveBeenCalled()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((prisma as any).changelogEntry.findFirst).not.toHaveBeenCalled()
   })
 })

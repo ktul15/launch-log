@@ -2,13 +2,20 @@ import { Queue } from 'bullmq'
 import IORedis from 'ioredis'
 import { env } from '../config/env'
 
-export type NotificationJobData = {
-  type:
-    | 'changelog_published'
-    | 'feature_shipped'
-    | 'status_changed'
-    | 'vote_verification'
-    | 'subscribe_verification'
+export type EmailNotificationJobData = {
+  type: 'changelog_published' | 'feature_shipped'
+  referenceId: string
+  projectId: string
+}
+
+export type VoteVerificationJobData = {
+  type: 'vote_verification'
+  referenceId: string
+  projectId: string
+}
+
+export type SubscriptionVerificationJobData = {
+  type: 'subscribe_verification'
   referenceId: string
   projectId: string
 }
@@ -22,16 +29,23 @@ export function createBullMQConnection(): IORedis {
   })
 }
 
+const defaultJobOptions = {
+  removeOnComplete: 100,
+  removeOnFail: 50,
+  attempts: 3,
+  backoff: { type: 'exponential', delay: 2000 },
+} as const
+
 // Returns a new Queue instance each call — callers own the lifecycle.
 // Do not use a module-level singleton: it leaks between Jest test runs.
-export function createNotificationQueue(connection: IORedis): Queue<NotificationJobData> {
-  return new Queue('notifications', {
-    connection,
-    defaultJobOptions: {
-      removeOnComplete: 100,
-      removeOnFail: 50,
-      attempts: 3,
-      backoff: { type: 'exponential', delay: 2000 },
-    },
-  })
+export function createEmailNotificationsQueue(connection: IORedis): Queue<EmailNotificationJobData> {
+  return new Queue('email-notifications', { connection, defaultJobOptions })
+}
+
+export function createVoteVerificationQueue(connection: IORedis): Queue<VoteVerificationJobData> {
+  return new Queue('vote-verification', { connection, defaultJobOptions })
+}
+
+export function createSubscriptionVerificationQueue(connection: IORedis): Queue<SubscriptionVerificationJobData> {
+  return new Queue('subscription-verification', { connection, defaultJobOptions })
 }
