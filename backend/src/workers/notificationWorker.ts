@@ -95,8 +95,8 @@ export async function processChangelogPublishedJob(
   const changelogUrl = `${env.FRONTEND_URL}/p/${entry.project.slug}/changelog`
 
   const subscribers = await prisma.subscriber.findMany({
-    where: { projectId, verified: true },
-    select: { id: true, email: true, verificationToken: true },
+    where: { projectId, verified: true, unsubscribedAt: null },
+    select: { id: true, email: true, unsubscribeToken: true },
   })
 
   if (subscribers.length === 0) return
@@ -123,7 +123,7 @@ export async function processChangelogPublishedJob(
   const results = await Promise.allSettled(
     pending.map(async (subscriber) => {
       const unsubscribeUrl = new URL('/api/v1/public/unsubscribe', env.FRONTEND_URL)
-      unsubscribeUrl.searchParams.set('token', subscriber.verificationToken)
+      unsubscribeUrl.searchParams.set('token', subscriber.unsubscribeToken)
 
       const result = await sendEmail({
         to: subscriber.email,
@@ -213,8 +213,8 @@ export async function processFeatureShippedJob(
   const roadmapUrl = `${env.FRONTEND_URL}/p/${item.project.slug}/roadmap`
 
   const subscribers = await prisma.subscriber.findMany({
-    where: { projectId, verified: true },
-    select: { id: true, email: true, verificationToken: true },
+    where: { projectId, verified: true, unsubscribedAt: null },
+    select: { id: true, email: true, unsubscribeToken: true },
   })
 
   if (subscribers.length === 0) return
@@ -238,7 +238,7 @@ export async function processFeatureShippedJob(
   const results = await Promise.allSettled(
     pending.map(async (subscriber) => {
       const unsubscribeUrl = new URL('/api/v1/public/unsubscribe', env.FRONTEND_URL)
-      unsubscribeUrl.searchParams.set('token', subscriber.verificationToken)
+      unsubscribeUrl.searchParams.set('token', subscriber.unsubscribeToken)
 
       const result = await sendEmail({
         to: subscriber.email,
@@ -301,7 +301,7 @@ const STATUS_LABELS: Record<string, string> = {
 type FeatureStatusChangedDeps = {
   prisma: PrismaClient
   log: FastifyBaseLogger
-  sendEmail: (opts: { to: string; featureTitle: string; newStatus: string; featuresUrl: string }) => Promise<SendResult>
+  sendEmail: (opts: { to: string; featureTitle: string; newStatus: string; featuresUrl: string; unsubscribeUrl: string }) => Promise<SendResult>
 }
 
 export async function processFeatureStatusChangedJob(
@@ -339,8 +339,8 @@ export async function processFeatureStatusChangedJob(
   const statusLabel = STATUS_LABELS[newStatus] ?? newStatus
 
   const voters = await prisma.vote.findMany({
-    where: { featureRequestId: featureId, verified: true },
-    select: { id: true, voterEmail: true },
+    where: { featureRequestId: featureId, verified: true, notifyOnStatusChange: true },
+    select: { id: true, voterEmail: true, unsubscribeToken: true },
   })
 
   if (voters.length === 0) return
@@ -362,11 +362,15 @@ export async function processFeatureStatusChangedJob(
 
   const results = await Promise.allSettled(
     pending.map(async (voter) => {
+      const voterUnsubscribeUrl = new URL('/api/v1/public/voter-unsubscribe', env.FRONTEND_URL)
+      voterUnsubscribeUrl.searchParams.set('token', voter.unsubscribeToken)
+
       const result = await sendEmail({
         to: voter.voterEmail,
         featureTitle: feature.title,
         newStatus: statusLabel,
         featuresUrl,
+        unsubscribeUrl: voterUnsubscribeUrl.toString(),
       })
 
       if (!result.ok) {
@@ -497,8 +501,10 @@ export async function processSubscribeVerificationJob(
     where: { id: subscriberId, projectId },
     select: {
       verified: true,
+      unsubscribedAt: true,
       email: true,
       verificationToken: true,
+      unsubscribeToken: true,
       project: { select: { name: true } },
     },
   })
@@ -510,6 +516,11 @@ export async function processSubscribeVerificationJob(
 
   if (subscriber.verified) {
     log.info({ subscriberId }, 'notification worker: subscriber already verified, skipping')
+    return
+  }
+
+  if (subscriber.unsubscribedAt) {
+    log.info({ subscriberId }, 'notification worker: subscriber has unsubscribed, skipping verification email')
     return
   }
 
@@ -527,8 +538,8 @@ export async function processSubscribeVerificationJob(
   const verifyUrlObj = new URL('/verify/subscribe', env.FRONTEND_URL)
   verifyUrlObj.searchParams.set('token', subscriber.verificationToken)
 
-  const unsubscribeUrlObj = new URL('/unsubscribe', env.FRONTEND_URL)
-  unsubscribeUrlObj.searchParams.set('token', subscriber.verificationToken)
+  const unsubscribeUrlObj = new URL('/api/v1/public/unsubscribe', env.FRONTEND_URL)
+  unsubscribeUrlObj.searchParams.set('token', subscriber.unsubscribeToken)
 
   const result = await sendEmail({
     to: subscriber.email,

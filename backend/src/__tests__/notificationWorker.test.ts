@@ -33,7 +33,7 @@ function makeDeps(overrides: {
   })
 
   const subscriberFindMany = overrides.findMany ?? jest.fn().mockResolvedValue([
-    { id: 'sub-1', email: 'a@example.com', verificationToken: 'tok-sub-1' },
+    { id: 'sub-1', email: 'a@example.com', unsubscribeToken: 'unsub-tok-sub-1' },
   ])
 
   const notificationLogFindMany = overrides.notificationLogFindMany ?? jest.fn().mockResolvedValue([])
@@ -195,13 +195,13 @@ describe('processChangelogPublishedJob', () => {
     )
   })
 
-  it('includes per-subscriber unsubscribeUrl containing verificationToken', async () => {
+  it('includes per-subscriber unsubscribeUrl containing unsubscribeToken', async () => {
     const { prisma, log, sendEmail, mocks } = makeDeps()
     await processChangelogPublishedJob(makeJob(), { prisma, log, sendEmail })
 
     expect(mocks.sendEmail).toHaveBeenCalledWith(
       expect.objectContaining({
-        unsubscribeUrl: expect.stringContaining('tok-sub-1'),
+        unsubscribeUrl: expect.stringContaining('unsub-tok-sub-1'),
       }),
     )
     const call = mocks.sendEmail.mock.calls[0][0] as { unsubscribeUrl: string }
@@ -406,7 +406,7 @@ function makeShippedDeps(overrides: {
   })
 
   const subscriberFindMany = overrides.findMany ?? jest.fn().mockResolvedValue([
-    { id: 'sub-1', email: 'a@example.com', verificationToken: 'tok-sub-1' },
+    { id: 'sub-1', email: 'a@example.com', unsubscribeToken: 'unsub-tok-sub-1' },
   ])
 
   const notificationLogFindMany = overrides.notificationLogFindMany ?? jest.fn().mockResolvedValue([])
@@ -551,13 +551,13 @@ describe('processFeatureShippedJob', () => {
     )
   })
 
-  it('includes per-subscriber unsubscribeUrl containing verificationToken', async () => {
+  it('includes per-subscriber unsubscribeUrl containing unsubscribeToken', async () => {
     const { prisma, log, sendEmail, mocks } = makeShippedDeps()
     await processFeatureShippedJob(makeShippedJob(), { prisma, log, sendEmail })
 
     expect(mocks.sendEmail).toHaveBeenCalledWith(
       expect.objectContaining({
-        unsubscribeUrl: expect.stringContaining('tok-sub-1'),
+        unsubscribeUrl: expect.stringContaining('unsub-tok-sub-1'),
       }),
     )
     const call = mocks.sendEmail.mock.calls[0][0] as { unsubscribeUrl: string }
@@ -735,8 +735,10 @@ function makeSubVerifyDeps(overrides: {
 } = {}) {
   const subscriberFindFirst = overrides.subscriberFindFirst ?? jest.fn().mockResolvedValue({
     verified: false,
+    unsubscribedAt: null,
     email: 'subscriber@example.com',
     verificationToken: 'sub-token-abc',
+    unsubscribeToken: 'unsub-token-abc',
     project: { name: 'Acme App' },
   })
 
@@ -783,8 +785,10 @@ describe('processSubscribeVerificationJob', () => {
     const { prisma, log, sendEmail, mocks } = makeSubVerifyDeps({
       subscriberFindFirst: jest.fn().mockResolvedValue({
         verified: true,
+        unsubscribedAt: null,
         email: 'subscriber@example.com',
         verificationToken: 'sub-token-abc',
+        unsubscribeToken: 'unsub-token-abc',
         project: { name: 'Acme App' },
       }),
     })
@@ -793,6 +797,25 @@ describe('processSubscribeVerificationJob', () => {
     expect(log.info).toHaveBeenCalledWith(
       expect.objectContaining({ subscriberId: 'sub-uuid-1' }),
       expect.stringContaining('already verified'),
+    )
+  })
+
+  it('returns early + logs info when subscriber has unsubscribed', async () => {
+    const { prisma, log, sendEmail, mocks } = makeSubVerifyDeps({
+      subscriberFindFirst: jest.fn().mockResolvedValue({
+        verified: false,
+        unsubscribedAt: new Date(),
+        email: 'subscriber@example.com',
+        verificationToken: 'sub-token-abc',
+        unsubscribeToken: 'unsub-token-abc',
+        project: { name: 'Acme App' },
+      }),
+    })
+    await processSubscribeVerificationJob(makeSubVerifyJob(), { prisma, log, sendEmail })
+    expect(mocks.sendEmail).not.toHaveBeenCalled()
+    expect(log.info).toHaveBeenCalledWith(
+      expect.objectContaining({ subscriberId: 'sub-uuid-1' }),
+      expect.stringContaining('unsubscribed'),
     )
   })
 
@@ -819,8 +842,8 @@ describe('processSubscribeVerificationJob', () => {
     expect(call.verifyUrl).toContain('/verify/subscribe')
     expect(call.verifyUrl).toContain('token=sub-token-abc')
     expect(() => new URL(call.unsubscribeUrl)).not.toThrow()
-    expect(call.unsubscribeUrl).toContain('/unsubscribe')
-    expect(call.unsubscribeUrl).toContain('token=sub-token-abc')
+    expect(call.unsubscribeUrl).toContain('/api/v1/public/unsubscribe')
+    expect(call.unsubscribeUrl).toContain('token=unsub-token-abc')
   })
 
   it('creates notificationLog row after successful send', async () => {
@@ -856,8 +879,8 @@ describe('processChangelogPublishedJob — batch retry on partial failure', () =
   it('throws after batch when at least one email send fails so BullMQ retries for missed subscribers', async () => {
     const { prisma, log, sendEmail } = makeDeps({
       findMany: jest.fn().mockResolvedValue([
-        { id: 'sub-1', email: 'a@example.com', verificationToken: 'tok-1' },
-        { id: 'sub-2', email: 'b@example.com', verificationToken: 'tok-2' },
+        { id: 'sub-1', email: 'a@example.com', unsubscribeToken: 'unsub-tok-1' },
+        { id: 'sub-2', email: 'b@example.com', unsubscribeToken: 'unsub-tok-2' },
       ]),
       sendEmail: jest.fn()
         .mockResolvedValueOnce({ ok: true })
@@ -871,8 +894,8 @@ describe('processChangelogPublishedJob — batch retry on partial failure', () =
   it('does not throw when all sends succeed', async () => {
     const { prisma, log, sendEmail } = makeDeps({
       findMany: jest.fn().mockResolvedValue([
-        { id: 'sub-1', email: 'a@example.com', verificationToken: 'tok-1' },
-        { id: 'sub-2', email: 'b@example.com', verificationToken: 'tok-2' },
+        { id: 'sub-1', email: 'a@example.com', unsubscribeToken: 'unsub-tok-1' },
+        { id: 'sub-2', email: 'b@example.com', unsubscribeToken: 'unsub-tok-2' },
       ]),
     })
     await expect(
@@ -885,8 +908,8 @@ describe('processFeatureShippedJob — batch retry on partial failure', () => {
   it('throws after batch when at least one email send fails so BullMQ retries for missed subscribers', async () => {
     const { prisma, log, sendEmail } = makeShippedDeps({
       findMany: jest.fn().mockResolvedValue([
-        { id: 'sub-1', email: 'a@example.com', verificationToken: 'tok-1' },
-        { id: 'sub-2', email: 'b@example.com', verificationToken: 'tok-2' },
+        { id: 'sub-1', email: 'a@example.com', unsubscribeToken: 'unsub-tok-1' },
+        { id: 'sub-2', email: 'b@example.com', unsubscribeToken: 'unsub-tok-2' },
       ]),
       sendEmail: jest.fn()
         .mockResolvedValueOnce({ ok: false, error: 'Bounced' })
@@ -900,7 +923,7 @@ describe('processFeatureShippedJob — batch retry on partial failure', () => {
   it('does not throw when all sends succeed', async () => {
     const { prisma, log, sendEmail } = makeShippedDeps({
       findMany: jest.fn().mockResolvedValue([
-        { id: 'sub-1', email: 'a@example.com', verificationToken: 'tok-1' },
+        { id: 'sub-1', email: 'a@example.com', unsubscribeToken: 'unsub-tok-1' },
       ]),
     })
     await expect(
@@ -909,7 +932,7 @@ describe('processFeatureShippedJob — batch retry on partial failure', () => {
   })
 })
 
-type StatusChangedSendFn = (opts: { to: string; featureTitle: string; newStatus: string; featuresUrl: string }) => Promise<SendResult>
+type StatusChangedSendFn = (opts: { to: string; featureTitle: string; newStatus: string; featuresUrl: string; unsubscribeUrl: string }) => Promise<SendResult>
 
 function makeStatusChangedJob(overrides: Partial<Extract<EmailNotificationJobData, { type: 'feature_status_changed' }>> = {}): EmailNotificationJobData {
   return {
@@ -935,7 +958,7 @@ function makeStatusChangedDeps(overrides: {
   })
 
   const voteFindMany = overrides.voteFindMany ?? jest.fn().mockResolvedValue([
-    { id: 'vote-1', voterEmail: 'voter@example.com' },
+    { id: 'vote-1', voterEmail: 'voter@example.com', unsubscribeToken: 'unsub-vote-tok-1' },
   ])
 
   const notificationLogFindMany = overrides.notificationLogFindMany ?? jest.fn().mockResolvedValue([])
@@ -993,8 +1016,8 @@ describe('processFeatureStatusChangedJob', () => {
   it('skips already-notified voters using voteId:newStatus dedup key', async () => {
     const { prisma, log, sendEmail, mocks } = makeStatusChangedDeps({
       voteFindMany: jest.fn().mockResolvedValue([
-        { id: 'vote-1', voterEmail: 'a@example.com' },
-        { id: 'vote-2', voterEmail: 'b@example.com' },
+        { id: 'vote-1', voterEmail: 'a@example.com', unsubscribeToken: 'unsub-v1' },
+        { id: 'vote-2', voterEmail: 'b@example.com', unsubscribeToken: 'unsub-v2' },
       ]),
       notificationLogFindMany: jest.fn().mockResolvedValue([
         { referenceId: 'vote-1:planned' },
@@ -1012,8 +1035,8 @@ describe('processFeatureStatusChangedJob', () => {
   it('sends only to unnotified voters', async () => {
     const { prisma, log, sendEmail, mocks } = makeStatusChangedDeps({
       voteFindMany: jest.fn().mockResolvedValue([
-        { id: 'vote-1', voterEmail: 'a@example.com' },
-        { id: 'vote-2', voterEmail: 'b@example.com' },
+        { id: 'vote-1', voterEmail: 'a@example.com', unsubscribeToken: 'unsub-v1' },
+        { id: 'vote-2', voterEmail: 'b@example.com', unsubscribeToken: 'unsub-v2' },
       ]),
       notificationLogFindMany: jest.fn().mockResolvedValue([
         { referenceId: 'vote-1:planned' },
@@ -1099,8 +1122,8 @@ describe('processFeatureStatusChangedJob', () => {
   it('does not create log row when send fails, then throws for retry', async () => {
     const { prisma, log, sendEmail, mocks } = makeStatusChangedDeps({
       voteFindMany: jest.fn().mockResolvedValue([
-        { id: 'vote-1', voterEmail: 'a@example.com' },
-        { id: 'vote-2', voterEmail: 'b@example.com' },
+        { id: 'vote-1', voterEmail: 'a@example.com', unsubscribeToken: 'unsub-v1' },
+        { id: 'vote-2', voterEmail: 'b@example.com', unsubscribeToken: 'unsub-v2' },
       ]),
       sendEmail: jest.fn()
         .mockResolvedValueOnce({ ok: false, error: 'Bounced' })
@@ -1124,6 +1147,17 @@ describe('processFeatureStatusChangedJob', () => {
     )
   })
 
+  it('includes unsubscribeUrl in status-changed email containing voter unsubscribeToken', async () => {
+    const { prisma, log, sendEmail, mocks } = makeStatusChangedDeps()
+    await processFeatureStatusChangedJob(makeStatusChangedJob(), { prisma, log, sendEmail })
+    expect(mocks.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ unsubscribeUrl: expect.stringContaining('unsub-vote-tok-1') }),
+    )
+    const call = mocks.sendEmail.mock.calls[0][0] as { unsubscribeUrl: string }
+    expect(() => new URL(call.unsubscribeUrl)).not.toThrow()
+    expect(call.unsubscribeUrl).toContain('/api/v1/public/voter-unsubscribe')
+  })
+
   it('dedup uses different keys per status — voter notified for planned still gets in_progress email', async () => {
     const { prisma, log, sendEmail, mocks } = makeStatusChangedDeps({
       featureFindFirst: jest.fn().mockResolvedValue({
@@ -1132,7 +1166,7 @@ describe('processFeatureStatusChangedJob', () => {
         project: { slug: 'acme' },
       }),
       voteFindMany: jest.fn().mockResolvedValue([
-        { id: 'vote-1', voterEmail: 'a@example.com' },
+        { id: 'vote-1', voterEmail: 'a@example.com', unsubscribeToken: 'unsub-v1' },
       ]),
       // vote-1 was already notified for 'planned', not for 'in_progress'
       notificationLogFindMany: jest.fn().mockResolvedValue([

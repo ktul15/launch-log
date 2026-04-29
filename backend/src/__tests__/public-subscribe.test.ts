@@ -99,6 +99,7 @@ describe('POST /api/v1/public/:projectKey/subscribe', () => {
     expect(subscriber).not.toBeNull()
     expect(subscriber!.verified).toBe(false)
     expect(subscriber!.verificationToken).toBeDefined()
+    expect(subscriber!.unsubscribeToken).toBeDefined()
   })
 
   it('enqueues subscribe_verification job', async () => {
@@ -366,10 +367,10 @@ describe('GET /api/v1/public/unsubscribe', () => {
       data: { verified: true },
     })
 
-    return { projectId, email, token: subscriber!.verificationToken }
+    return { projectId, email, token: subscriber!.unsubscribeToken }
   }
 
-  it('deletes subscriber and returns { unsubscribed: true }', async () => {
+  it('soft-deletes subscriber and returns { unsubscribed: true }', async () => {
     const { projectId, email, token } = await createVerifiedSubscriber(app, 'unsub-happy')
 
     const res = await app.inject({
@@ -384,7 +385,19 @@ describe('GET /api/v1/public/unsubscribe', () => {
     const subscriber = await prisma.subscriber.findUnique({
       where: { projectId_email: { projectId, email } },
     })
-    expect(subscriber).toBeNull()
+    expect(subscriber).not.toBeNull()
+    expect(subscriber!.unsubscribedAt).not.toBeNull()
+    expect(subscriber!.verified).toBe(false)
+  })
+
+  it('returns 200 for non-UUID token (short-circuit, no DB query)', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/public/unsubscribe',
+      query: { token: 'not-a-uuid' },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({ unsubscribed: true })
   })
 
   it('returns 200 for unknown token (treat as already-unsubscribed)', async () => {
@@ -424,6 +437,90 @@ describe('GET /api/v1/public/unsubscribe', () => {
     expect(res2.statusCode).toBe(200)
     expect(JSON.parse(res2.body)).toEqual({ unsubscribed: true })
   })
+
+  it('re-subscribe after unsubscribe clears unsubscribedAt and sends verification', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'unsub-resub')
+    const { projectId, widgetKey } = await createProjectAndGetKey(app, cookie, 'unsub-resub')
+    const email = testEmail('unsub-resub-user')
+
+    await app.inject({ method: 'POST', url: `/api/v1/public/${widgetKey}/subscribe`, payload: { email } })
+    const sub = await prisma.subscriber.findUnique({ where: { projectId_email: { projectId, email } } })
+    await prisma.subscriber.update({ where: { id: sub!.id }, data: { verified: true } })
+
+    // Unsubscribe
+    await app.inject({ method: 'GET', url: '/api/v1/public/unsubscribe', query: { token: sub!.unsubscribeToken } })
+    const afterUnsub = await prisma.subscriber.findUnique({ where: { projectId_email: { projectId, email } } })
+    expect(afterUnsub!.unsubscribedAt).not.toBeNull()
+
+    // Re-subscribe
+    ;(app.subscriptionVerificationQueue.add as jest.Mock).mockClear()
+    const res = await app.inject({ method: 'POST', url: `/api/v1/public/${widgetKey}/subscribe`, payload: { email } })
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({ status: 'verification_sent' })
+
+    const afterResub = await prisma.subscriber.findUnique({ where: { projectId_email: { projectId, email } } })
+    expect(afterResub!.id).toBe(sub!.id)
+    expect(afterResub!.unsubscribedAt).toBeNull()
+    // Token must be rotated so old verification links from prior cycles cannot be replayed
+    expect(afterResub!.verificationToken).not.toBe(sub!.verificationToken)
+  })
+})
+
+// ─── GET /api/v1/public/voter-unsubscribe ────────────────────────────────────
+
+describe('GET /api/v1/public/voter-unsubscribe', () => {
+  it('sets notifyOnStatusChange=false and returns { unsubscribed: true }', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'voter-unsub')
+    const { widgetKey } = await createProjectAndGetKey(app, cookie, 'voter-unsub')
+    const email = testEmail('voter-unsub-user')
+
+    const featureRes = await app.inject({
+      method: 'POST',
+      url: `/api/v1/public/${widgetKey}/features`,
+      payload: { title: 'Voter unsub feature', email },
+    })
+    const featureId = JSON.parse(featureRes.body).id
+
+    const vote = await prisma.vote.findFirst({ where: { featureRequestId: featureId, voterEmail: email } })
+    expect(vote).not.toBeNull()
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/public/voter-unsubscribe',
+      query: { token: vote!.unsubscribeToken },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({ unsubscribed: true })
+
+    const updated = await prisma.vote.findFirst({ where: { id: vote!.id } })
+    expect(updated!.notifyOnStatusChange).toBe(false)
+  })
+
+  it('is idempotent — second click still returns 200', async () => {
+    const { cookie } = await registerAndGetCookie(app, 'voter-unsub-idem')
+    const { widgetKey } = await createProjectAndGetKey(app, cookie, 'voter-unsub-idem')
+    const email = testEmail('voter-unsub-idem-user')
+
+    const featureRes = await app.inject({ method: 'POST', url: `/api/v1/public/${widgetKey}/features`, payload: { title: 'Idempotent feature', email } })
+    const featureId = JSON.parse(featureRes.body).id
+    const vote = await prisma.vote.findFirst({ where: { featureRequestId: featureId, voterEmail: email } })
+
+    await app.inject({ method: 'GET', url: '/api/v1/public/voter-unsubscribe', query: { token: vote!.unsubscribeToken } })
+    const res2 = await app.inject({ method: 'GET', url: '/api/v1/public/voter-unsubscribe', query: { token: vote!.unsubscribeToken } })
+    expect(res2.statusCode).toBe(200)
+    expect(JSON.parse(res2.body)).toEqual({ unsubscribed: true })
+  })
+
+  it('returns 200 for unknown token', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/v1/public/voter-unsubscribe', query: { token: crypto.randomUUID() } })
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({ unsubscribed: true })
+  })
+
+  it('returns 400 when token is missing', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/v1/public/voter-unsubscribe', query: {} })
+    expect(res.statusCode).toBe(400)
+  })
 })
 
 // ─── processSubscribeVerificationJob integration ──────────────────────────────
@@ -458,7 +555,7 @@ describe('processSubscribeVerificationJob (integration)', () => {
       expect.objectContaining({
         to: email,
         verifyUrl: expect.stringContaining(encodeURIComponent(subscriber!.verificationToken)),
-        unsubscribeUrl: expect.stringContaining(encodeURIComponent(subscriber!.verificationToken)),
+        unsubscribeUrl: expect.stringContaining(encodeURIComponent(subscriber!.unsubscribeToken)),
       }),
     )
   })

@@ -35,6 +35,7 @@ export type SendFeatureStatusChangedEmailOptions = {
   featureTitle: string
   newStatus: string
   featuresUrl: string
+  unsubscribeUrl: string
 }
 
 export type SendVoteVerificationEmailOptions = {
